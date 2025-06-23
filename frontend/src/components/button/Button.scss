@@ -1,0 +1,283 @@
+[data-component='Button'] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 12px;
+  font-optical-sizing: auto;
+  font-weight: 400;
+  font-style: normal;
+  border: none;
+  background-color: #ececf1;
+  color: #101010;
+  border-radius: 1000px;
+  padding: 8px 24px;
+  min-height: 42px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  outline: none;
+  position: relative;
+  overflow: hidden;
+  
+  // Cool hover effect with subtle shadow and glow
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border-radius: inherit;
+    background: linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0));
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+  
+  // Size variants
+  &.button-size-sm {
+    font-size: 11px;
+    padding: 6px 16px;
+    min-height: 32px;
+    
+    .icon svg {
+      width: 14px;
+      height: 14px;
+    }
+  }
+  
+  &.button-size-lg {
+    font-size: 14px;
+    padding: 12px 32px;
+    min-height: 48px;
+    
+    .icon svg {
+      width: 18px;
+      height: 18px;
+    }
+  }
+
+  // Style variants
+  &.button-style-primary {
+    background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+    color: white;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+    
+    &:hover:not([disabled]) {
+      background: linear-gradient(135deg, #2563eb, #1e40af);
+      box-shadow: 0 4px 16px rgba(59, 130, 246, 0.4);
+      transform: translateY(-1px);
+    }
+    
+    &:active:not([disabled]) {
+      transform: translateY(0);
+      box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+    }
+  }
+  
+  &.button-style-secondary {
+    background: linear-gradient(135deg, #6366f1, #4338ca);
+    color: white;
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+    
+    &:hover:not([disabled]) {
+      background: linear-gradient(135deg, #5b21b6, #4c1d95);
+      box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4);
+      transform: translateY(-1px);
+    }
+  }
+
+  // Variant styles (outline, ghost)
+  &.button-variant-outline {
+    background: transparent;
+    border: 1.5px solid #e5e7eb;
+    
+    &:hover:not([disabled]) {
+      border-color: #9ca3af;
+      background: rgba(243, 244, 246, 0.5);
+    }
+    
+    &.button-style-primary {
+      border-color: #3b82f6;
+      color: #3b82f6;
+      background: transparent;
+      box-shadow: none;
+      
+      &:hover:not([disabled]) {
+        background: rgba(59, 130, 246, 0.1);
+        border-color: #2563eb;
+        color: #2563eb;
+        transform: none;
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      }
+    }
+  }
+  
+  &.button-variant-ghost {
+    background: transparent;
+    
+    &:hover:not([disabled]) {
+      background: rgba(243, 244, 246, 0.8);
+    }
+  }
+  
+  &.button-style-secondary.button-variant-outline {
+  color: #6366f1;
+  background: transparent;
+  border-color: #6366f1;
+
+  &:hover:not([disabled]) {
+    color: #4c1d95;
+    border-color: #4c1d95;
+    background: rgba(99, 102, 241, 0.1);
+  }
+
+  &:disabled {
+    color: #9ca3af;
+    border-color: #e5e7eb;
+    background-color: #f3f4f6;
+  }
+}
+
+
+  // Your existing styles
+  &.button-style-action {
+    background-color: #101010;
+    color: #ececf1;
+    box-shadow: 0 2px 8px rgba(16, 16, 16, 0.2);
+    
+    &:hover:not([disabled]) {
+      background-color: #404040;
+      box-shadow: 0 4px 16px rgba(16, 16, 16, 0.3);
+      transform: translateY(-1px);
+    }
+    
+    &:active:not([disabled]) {
+      transform: translateY(0);
+    }
+  }
+  
+  &.button-style-alert {
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+    color: #ececf1;
+    box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+    
+    &:hover:not([disabled]) {
+      background: linear-gradient(135deg, #dc2626, #b91c1c);
+      box-shadow: 0 4px 16px rgba(239, 68, 68, 0.4);
+      transform: translateY(-1px);
+    }
+  }
+  
+  &.button-style-flush {
+    background-color: rgba(255, 255, 255, 0);
+    
+    &:hover:not([disabled]) {
+      background-color: rgba(236, 236, 241, 0.5);
+    }
+  }
+
+  // Enhanced hover states
+  &:hover:not([disabled]) {
+    &::before {
+      opacity: 1;
+    }
+  }
+  
+  // Click animation
+  &:active:not([disabled]) {
+    &::after {
+      width: 300px;
+      height: 300px;
+    }
+  }
+
+  // Enhanced disabled state
+  &[disabled] {
+    color: #9ca3af;
+    background-color: #f3f4f6;
+    cursor: not-allowed;
+    box-shadow: none;
+    
+    &::before,
+    &::after {
+      display: none;
+    }
+  }
+  
+  &:not([disabled]) {
+    cursor: pointer;
+  }
+  
+  // Default hover (enhanced from your original)
+  &:hover:not([disabled]):not(.button-style-action):not(.button-style-alert):not(.button-style-primary):not(.button-style-secondary) {
+    background-color: #d8d8d8;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    transform: translateY(-1px);
+  }
+  
+  &:active:not([disabled]) {
+    transform: translateY(1px);
+  }
+  
+  // Icon styling
+  .icon {
+    display: flex;
+    transition: transform 0.2s ease;
+    
+    &.icon-start {
+      margin-left: -8px;
+    }
+    
+    &.icon-end {
+      margin-right: -8px;
+    }
+    
+    svg {
+      width: 16px;
+      height: 16px;
+    }
+  }
+  
+  // Icon colors (enhanced with more options)
+  &.icon-red .icon {
+    color: #ef4444;
+  }
+  
+  &.icon-green .icon {
+    color: #10b981;
+  }
+  
+  &.icon-grey .icon {
+    color: #6b7280;
+  }
+  
+  &.icon-blue .icon {
+    color: #3b82f6;
+  }
+  
+  &.icon-purple .icon {
+    color: #8b5cf6;
+  }
+  
+  &.icon-fill {
+    svg {
+      fill: currentColor;
+    }
+  }
+  
+  // Cool icon hover effect
+  &:hover:not([disabled]) .icon {
+    transform: scale(1.1);
+  }
+  
+  // Label animation
+  .label {
+    position: relative;
+    z-index: 1;
+  }
+  
+  // Focus styles for accessibility
+  &:focus-visible {
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
+  }
+}
