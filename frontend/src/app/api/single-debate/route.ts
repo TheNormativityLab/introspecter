@@ -3,9 +3,9 @@ import { NextRequest, NextResponse } from "next/server";
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const id = searchParams.get('id');
-    
-    if (!id) {
+    const experiment = searchParams.get('experimentName');
+    const seed = searchParams.get('seed');
+    if (!experiment) {
       return NextResponse.json(
         { success: false, message: "Document ID is required" },
         { status: 400 }
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
     }
     
     try {
-      const backendResponse = await fetch(`${process.env.BACKEND_URL}/api/v1/debate/single-debate?id=${id}`, {
+      const backendResponse = await fetch(`${process.env.BACKEND_URL}/api/v1/debate/single-debate?experimentName=${experiment}&seed=${seed}`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -51,6 +51,7 @@ export async function GET(req: NextRequest) {
       }
 
       const data = await backendResponse.json();
+      // console.log('Fetched single debate data:', data);
       return NextResponse.json(data);
 
     } catch (fetchError) {

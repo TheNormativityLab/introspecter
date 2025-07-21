@@ -1,0 +1,44 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model LlmConfig {
+  id          Int      @id @default(autoincrement())
+  modelName   String   @map("model_name")
+  model       String
+  apiBase     String?  @map("api_base")
+  timeout     Int      @default(300)
+  numRetries  Int      @default(5) @map("num_retries")
+  rpm         Int?
+  topP        Float?   @map("top_p")
+  maxTokens   Int?     @map("max_tokens")
+  temperature Float?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  debates     Debate[]
+  
+  @@map("llm_configs")
+}
+
+model Debate {
+  id              Int         @id @default(autoincrement())
+  seed            Int?
+  datasetName     String?     @map("dataset_name")
+  status          String      @default("completed")
+  performanceData Json?       @map("performance_data")
+  resultData      Json?       @map("result_data")
+  wandbMetadata   Json?       @map("wandb_metadata")
+  processedAt     DateTime    @map("processed_at")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+  
+  llmConfigs      LlmConfig[]
+  
+  @@map("debates")
+}

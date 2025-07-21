@@ -9,13 +9,8 @@ export default function Home() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   useEffect(() => {
-    const userId = localStorage.getItem('userId');
-    if (userId) {
-      setIsLoggedIn(true);
-      window.location.href = '/dashboard';
-    } else {
-      setLoading(false);
-    }
+    // const userId = localStorage.getItem('userId');
+    window.location.href = '/dashboard';
   }, []);
   
   if (loading) {
