@@ -40,12 +40,12 @@ export async function GET(req: NextRequest) {
           );
         }
       }
-
+      
       const data = await backendResponse.json();
-      // console.log('Fetched finished debates:', data);
+      // console.log('Fetched all debates:', data.experiment_groups[5]);
       return NextResponse.json(data);
 
-    } catch (fetchError) {
+    } catch (fetchError) { 
       console.error('Backend fetch error:', fetchError);
       return NextResponse.json(
         { success: false, message: "Failed to connect to backend service" },

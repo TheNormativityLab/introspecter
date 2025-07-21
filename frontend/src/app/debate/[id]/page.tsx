@@ -1,68 +1,148 @@
 "use client";
+import { logger } from '@/utils/logger';
 import { Button } from '@/components/button/Button';
 import { useEffect, useState, use } from 'react';
-import { ChevronLeft, ChevronRight, Icon } from 'react-feather';
-import { ArrowLeft, Clock, Users, User, MessageSquare, BarChart3, Calendar, CheckCircle, PlayCircle, Trophy, Scale, Brain, UserRound, FileText } from 'lucide-react';
+import { useParams, useSearchParams } from 'next/navigation';
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'react-feather';
+import { MultiRunDebateData, DebateRun, EvaluationResult, IncorrectSwitchQuestion } from '../../../types/debate';
+import { ArrowLeft, Clock, Users, User, MessageSquare, BarChart3, Calendar, CheckCircle, PlayCircle, Trophy, Scale, Brain, UserRound, FileText, Filter, X, AlertCircle, Database, Layers, XCircle, TrendingDown } from 'lucide-react';
 
-interface DebateData {
-  _id: string;
-  status: string;
-  performance_data: Array<{
-    [key: string]: number;
-    majority_vote: number;
-  }>;
-  result_data: Array<{
-    question_id: number;
-    question: string;
-    correct_answer: string;
-    debate_session: {
-      rounds: Array<{
-        round_number: number;
-        responses: {
-          [agentKey: string]: string;
-        };
-        queries: any;
-        metrics?: {
-          [agentKey: string]: number;
-          majority_vote: number;
-        };
-      }>;
-    };
-  }>;
-  modelConfig: any;
-  wandb_metadata: {
-    startedAt: string;
-    parsed_args: {
-      task: string;
-      'experiment.num_questions': number;
-      'experiment.num_rounds': number;
-      'agent_counts.0': number;
-      'agent_counts.1': number;
-      'agent_counts.2': number;
-      'llm_conf@llm1': string;
-      'llm_conf@llm2': string;
-      'llm_conf@llm3'?: string;
-      'experiment.name': string;
-    };
-  };
-  processed_at: string;
-}
+import {
+  solveMathProblems,
+  parseMmluAnswer,
+  parseCommonsenseQaAnswer,
+  parseMathAnswer,
+  parseGsm8kAnswer,
+  type TaskName
+} from '../../../utils/evaluation';
 
-export default function DebateDetailsPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id: debateId } = use(params);
+export default function DebateDetailsPage() {
+  const params = useParams();
+  const searchParams = useSearchParams();
+  const debateId = params.id as string;
+  const seed = searchParams.get('seed') || 'default';
   const [activeTab, setActiveTab] = useState('questions');
   const [selectedRound, setSelectedRound] = useState(0);
   const [selectedQuestion, setSelectedQuestion] = useState(0);
+  const [selectedDataset, setSelectedDataset] = useState<string>('all');
+  const [selectedRun, setSelectedRun] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [debateData, setDebateData] = useState<{ debate: DebateData } | null>(null);
+  const [debateData, setDebateData] = useState<MultiRunDebateData | null>(null);
+  const [collapsedAgents, setCollapsedAgents] = useState<{ [key: string]: boolean }>({});
+  const [filteredQuestions, setFilteredQuestions] = useState<number[]>([]);
+  const [expandedResponses, setExpandedResponses] = useState<{ [key: string]: boolean }>({});
+  const [evaluationResults, setEvaluationResults] = useState<{ [key: string]: EvaluationResult }>({});
+  const [incorrectSwitches, setIncorrectSwitches] = useState<IncorrectSwitchQuestion[]>([]);
+
+  const evaluateResponse = (
+    response: string,
+    correctAnswer: string | number,
+    taskName: TaskName
+  ): EvaluationResult => {
+    let extractedAnswer: string | number | null = null;    
+    if (taskName === 'mmlu') {
+      extractedAnswer = parseMmluAnswer(response);
+      if (extractedAnswer === null) {
+        extractedAnswer = solveMathProblems(response);
+      }
+    } else if (taskName === 'math') {
+      extractedAnswer = parseMathAnswer(response);
+    } else if (taskName === 'commonsense_qa') {
+      extractedAnswer = parseCommonsenseQaAnswer(response);
+    } else if (taskName === 'gsm8k') {
+      extractedAnswer = parseGsm8kAnswer(response);
+      console.log('GSM8K Response:', response, 'Extracted Answer:', extractedAnswer);
+    }
+
+    let isCorrect = false;
+    
+    if (extractedAnswer !== null) {
+      if (taskName === 'gsm8k') {
+        const gtValue = solveMathProblems(correctAnswer.toString());
+        const predValue = solveMathProblems(extractedAnswer.toString());    
+        console.log('GSM8K Evaluation:', { gtValue, predValue });    
+        isCorrect = predValue === gtValue;
+      } else if (taskName === 'commonsense_qa' || taskName === 'mmlu') {
+        isCorrect = extractedAnswer.toString().toUpperCase() === correctAnswer.toString().toUpperCase();
+      } else if (taskName === 'math') {
+        const gtValue = typeof correctAnswer === 'string' ? parseFloat(correctAnswer) : correctAnswer;
+        const predValue = typeof extractedAnswer === 'string' ? parseFloat(extractedAnswer) : extractedAnswer;
+        isCorrect = Math.abs(predValue - gtValue) < 1e-6;
+      } else {
+        isCorrect = extractedAnswer.toString().toUpperCase() === correctAnswer.toString().toUpperCase();
+      }
+    }
+    
+    return {
+      isCorrect,
+      extractedAnswer,
+    };
+  };
+
+  const findIncorrectSwitches = () => {
+    if (!currentRun?.result_data) return [];
+    
+    const switches: IncorrectSwitchQuestion[] = [];
+    const taskName = inferDatasetFromTask(currentRun?.dataset_name) as TaskName;
+    
+    currentRun.result_data.forEach((questionData, questionIndex) => {
+      const rounds = questionData.debate_session?.rounds || [];
+      if (rounds.length < 2) return;
+      
+      Object.keys(rounds[0].responses || {}).forEach(agentName => {
+        const agentEvaluations: boolean[] = [];
+        
+        rounds.forEach(round => {
+          const response = round.responses[agentName] || '';
+          const evaluation = evaluateResponse(response, questionData.correct_answer, taskName);
+          agentEvaluations.push(evaluation.isCorrect);
+        });
+        
+        for (let i = 1; i < agentEvaluations.length; i++) {
+          const prevCorrect = agentEvaluations[i - 1];
+          const currentCorrect = agentEvaluations[i];
+          
+          if (prevCorrect && !currentCorrect) {
+            switches.push({
+              questionIndex,
+              agentName,
+              switchedFromRound: i - 1,
+              switchedToRound: i
+            });
+          }
+        }
+      });
+    });
+    
+    return switches;
+  };
+
+  useEffect(() => {
+    if (!currentRun?.result_data?.[selectedQuestion]) return;
+    
+    const newEvaluationResults: { [key: string]: EvaluationResult } = {};
+    const questionData = currentRun.result_data[selectedQuestion];
+    const taskName = inferDatasetFromTask(currentRun?.dataset_name) as TaskName;
+    questionData.debate_session?.rounds?.forEach((round, roundIndex) => {
+      Object.entries(round.responses).forEach(([agentName, response]) => {
+        const key = `${agentName}_${roundIndex}`;
+        newEvaluationResults[key] = evaluateResponse(
+          response,
+          questionData.correct_answer,
+          taskName
+        );
+      });
+    });
+    
+    setEvaluationResults(newEvaluationResults);
+  }, [selectedQuestion, selectedRun, debateData]);
 
   useEffect(() => {
     const fetchDebate = async () => {
       try {
-        console.log('Fetching debate data for ID:', debateId);
         if (!debateId) return;
-        const response = await fetch(`/api/single-debate?id=${encodeURIComponent(debateId)}`, {
+        const response = await fetch(`/api/single-debate?experimentName=${encodeURIComponent(debateId)}&seed=${encodeURIComponent(seed)}`, {
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',
@@ -83,6 +163,182 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
 
     fetchDebate();
   }, [debateId]);
+
+  const getCurrentRun = (): DebateRun | null => {
+    if (!debateData?.runs || debateData.runs.length === 0) return null;
+    return debateData.runs[selectedRun] || debateData.runs[0];
+  };
+
+  const currentRun = getCurrentRun();
+
+  useEffect(() => {
+    if (currentRun) {
+      const switches = findIncorrectSwitches();
+      setIncorrectSwitches(switches);
+    }
+  }, [currentRun, selectedRun]);
+
+  useEffect(() => {
+    if (!currentRun?.result_data) return;
+
+    let questions = currentRun.result_data.map((_, index) => index);
+    
+    if (activeTab === 'filter-incorrect') {
+      const switchQuestions = [...new Set(incorrectSwitches.map(s => s.questionIndex))];
+      questions = questions.filter(index => switchQuestions.includes(index));
+    } else if (selectedDataset !== 'all') {
+      questions = questions.filter(index => {
+        const questionData = currentRun.result_data[index];
+        const dataset = questionData.dataset || inferDatasetFromTask(currentRun.wandb_metadata?.parsed_args?.task);
+        return dataset === selectedDataset;
+      });
+    }
+
+    setFilteredQuestions(questions);
+    
+    if (questions.length > 0 && !questions.includes(selectedQuestion)) {
+      setSelectedQuestion(questions[0]);
+    }
+  }, [currentRun, selectedDataset, activeTab, selectedQuestion, selectedRun, incorrectSwitches]);
+
+  useEffect(() => {
+    setSelectedQuestion(0);
+    setSelectedRound(0);
+  }, [selectedRun]);
+
+  const inferDatasetFromTask = (task: string): string => {
+    if (!task) return 'unknown';
+    const lowerTask = task.toLowerCase();
+    if (lowerTask.includes('mmlu')) return 'mmlu';
+    if (lowerTask.includes('gsm8k')) return 'gsm8k';
+    if (lowerTask.includes('commonsense_qa')) return 'commonsense_qa';
+    if (lowerTask.includes('math')) return 'math';
+    return 'unknown';
+  };
+
+  const getAvailableDatasets = () => {
+    if (!currentRun?.result_data) return [];
+    
+    const datasets = new Set<string>();
+    
+    currentRun.result_data.forEach(question => {
+      if (question.dataset) {
+        datasets.add(question.dataset);
+      }
+    });
+    
+    if (datasets.size === 0) {
+      const task = currentRun.wandb_metadata?.parsed_args?.task;
+      if (task) {
+        const taskDatasets = task.split(',').map(t => t.trim().toLowerCase());
+        taskDatasets.forEach(dataset => {
+          if (['mmlu', 'gsm8k', 'commonsense_qa', 'math'].includes(dataset)) {
+            datasets.add(dataset);
+          }
+        });
+      }
+    }
+    
+    return Array.from(datasets).sort();
+  };
+
+  const getDatasetDisplayName = (dataset: string): string => {
+    const displayNames: { [key: string]: string } = {
+      'mmlu': 'MMLU',
+      'gsm8k': 'GSM8K',
+      'commonsense_qa': 'CommonsenseQA',
+      'math': 'MATH'
+    };
+    return displayNames[dataset] || dataset.toUpperCase();
+  };
+
+  const getRunDisplayInfo = (run: DebateRun) => {
+    const task = run.wandb_metadata?.parsed_args?.task;
+    const dataset = (run as any).dataset_name || run.result_data?.[0]?.dataset || inferDatasetFromTask(task);
+    const totalQuestions = run.result_data?.length || 0;
+    
+    return {
+      dataset: getDatasetDisplayName(dataset),
+      totalQuestions,
+      task
+    };
+  };
+
+  const toggleResponseExpansion = (agentName: string, roundIndex: number) => {
+    const key = `${agentName}_${roundIndex}_expanded`;
+    setExpandedResponses(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }));
+  };
+
+  const getDatasetStats = () => {
+    if (!currentRun?.result_data) return {};
+    
+    const stats: { [key: string]: { total: number } } = {};
+    
+    currentRun.result_data.forEach((question, index) => {
+      const dataset = question.dataset || inferDatasetFromTask(currentRun.wandb_metadata?.parsed_args?.task);
+      if (!stats[dataset]) {
+        stats[dataset] = { total: 0 };
+      }
+      stats[dataset].total++;
+    });
+    
+    return stats;
+  };
+
+  const truncateText = (text: string): string => {
+    if (!text) return '';
+    
+    const lines = text.split('\n').filter(line => line.trim().length > 0);
+    
+    if (lines.length <= 2) return text;
+    
+    const firstLine = lines[0].trim();
+    const lastLine = lines[lines.length - 1].trim();
+    
+    return `${firstLine}\n\n...\n\n${lastLine}`;
+  };
+
+  const toggleAgentCollapse = (agentName: string) => {
+    setCollapsedAgents(prev => ({
+      ...prev,
+      [agentName]: !prev[agentName]
+    }));
+  };
+
+  const renderEvaluationBadge = (evaluation: EvaluationResult) => {
+    if (evaluation.isCorrect) {
+      return (
+        <div className="flex items-center space-x-2 mb-3">
+          <span className="flex items-center px-2 py-1 bg-green-100 text-green-800 text-xs rounded-full border border-green-200">
+            <CheckCircle className="w-3 h-3 mr-1" />
+            Correct
+          </span>
+          {evaluation.extractedAnswer !== null && (
+            <span className="px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded border border-blue-200 font-mono">
+              Answer: {evaluation.extractedAnswer}
+            </span>
+          )}
+        </div>
+      );
+    } else {
+      return (
+        <div className="flex items-center space-x-2 mb-3">
+          <span className="flex items-center px-2 py-1 bg-red-100 text-red-800 text-xs rounded-full border border-red-200">
+            <XCircle className="w-3 h-3 mr-1" />
+            Incorrect
+          </span>
+          {evaluation.extractedAnswer !== null && (
+            <span className="px-2 py-1 bg-gray-50 text-gray-600 text-xs rounded border border-gray-200 font-mono">
+              Answer: {evaluation.extractedAnswer}
+            </span>
+          )}
+        </div>
+      );
+    }
+  };
 
   if (loading) {
     return (
@@ -111,7 +367,7 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
     );
   }
 
-  if (!debateData?.debate) {
+  if (!debateData?.runs || debateData.runs.length === 0) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-6 text-center max-w-md">
@@ -127,34 +383,32 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
     );
   }
 
-  const debate = debateData.debate;
-
   const formatText = (text: string) => {
     if (!text) return '';
     
     let formatted = text
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
         .replace(/\*(.*?)\*/g, '<em>$1</em>')        
-        .replace(/### (.*?)(?=\n|$)/g, '<h3 class="font-semibold text-gray-800 mt-3 mb-2">$1</h3>')
-        .replace(/## (.*?)(?=\n|$)/g, '<h2 class="font-bold text-gray-900 mt-3 mb-2">$1</h2>') 
-        .replace(/# (.*?)(?=\n|$)/g, '<h1 class="font-bold text-gray-900 text-lg mt-3 mb-2">$1</h1>')        
-        .replace(/\\\((.*?)\\\)/g, '<span class="inline-block bg-gray-100 px-1 rounded font-mono text-sm">$1</span>')
-        .replace(/\\\[(.*?)\\\]/g, '<div class="bg-gray-100 p-2 rounded font-mono text-sm my-2">$1</div>')        
-        .replace(/\\?boxed\{([^}]+)\}/g, '<span class="inline-block bg-blue-100 border border-blue-300 px-2 py-1 rounded font-semibold text-blue-800">$1</span>')        
-        .replace(/<<([^>]+)>>/g, '<span class="inline-block bg-purple-100 border border-purple-300 px-2 py-1 rounded font-mono text-sm text-purple-800">$1</span>')        
-        .replace(/\(([A-Z])\)(?=\s|$)/g, '<span class="inline-block bg-yellow-100 border border-yellow-300 px-2 py-1 rounded font-semibold text-yellow-800">($1)</span>')        
-        .replace(/^[\*\-] (.+)$/gm, '<li class="ml-4 mb-1">$1</li>')
-        .replace(/^\d+\. (.+)$/gm, '<li class="ml-4 mb-1 list-decimal">$1</li>')        
-        .replace(/\n\n+/g, '</p><p class="mb-2">')
-        .replace(/\n/g, '<br>');
+        .replace(/### (.*?)(?=\n|$)/g, '<h3 class="font-semibold text-gray-800 mt-4 mb-2">$1</h3>')
+        .replace(/## (.*?)(?=\n|$)/g, '<h2 class="font-bold text-gray-900 mt-4 mb-2">$1</h2>') 
+        .replace(/# (.*?)(?=\n|$)/g, '<h1 class="font-bold text-gray-900 text-lg mt-4 mb-2">$1</h1>')        
+        .replace(/\\\((.*?)\\\)/g, '<span class="inline-block bg-gray-100 px-1 rounded font-mono text-sm mx-0.5">$1</span>')
+        .replace(/\\\[(.*?)\\\]/g, '<div class="bg-gray-100 p-3 rounded font-mono text-sm my-3">$1</div>')        
+        .replace(/\\?boxed\{([^}]+)\}/g, '<span class="inline-block bg-blue-100 border border-blue-300 px-2 py-1 rounded font-semibold text-blue-800 mx-1">$1</span>')        
+        .replace(/<<([^>]+)>>/g, '<span class="inline-block bg-purple-100 border border-purple-300 px-2 py-1 rounded font-mono text-sm text-purple-800 mx-1">$1</span>')        
+        .replace(/\(([A-Z])\)(?=\s|$)/g, '<span class="inline-block bg-yellow-100 border border-yellow-300 px-2 py-1 rounded font-semibold text-yellow-800 mx-1">($1)</span>')        
+        .replace(/^[\*\-] (.+)$/gm, '<li class="ml-4 mb-1.5 leading-relaxed">$1</li>')
+        .replace(/^\d+\. (.+)$/gm, '<li class="ml-4 mb-1.5 list-decimal leading-relaxed">$1</li>')        
+        .replace(/\n\n+/g, '</p><p class="mb-3 leading-relaxed">')
+        .replace(/\n/g, '<br class="mb-1">');
     
     if (!formatted.startsWith('<')) {
-        formatted = `<p class="mb-2">${formatted}</p>`;
+        formatted = `<p class="mb-3 leading-relaxed">${formatted}</p>`;
     }
     
     formatted = formatted
-        .replace(/(<li class="ml-4 mb-1 list-decimal">.*?<\/li>(?:\s*<li class="ml-4 mb-1 list-decimal">.*?<\/li>)*)/gs, '<ol class="list-decimal list-inside mb-2 ml-4">$1</ol>')
-        .replace(/(<li class="ml-4 mb-1">.*?<\/li>(?:\s*<li class="ml-4 mb-1">.*?<\/li>)*)/gs, '<ul class="list-disc list-inside mb-2 ml-4">$1</ul>');
+        .replace(/(<li class="ml-4 mb-1.5 list-decimal leading-relaxed">.*?<\/li>(?:\s*<li class="ml-4 mb-1.5 list-decimal leading-relaxed">.*?<\/li>)*)/gs, '<ol class="list-decimal list-inside mb-4 ml-4 space-y-1.5">$1</ol>')
+        .replace(/(<li class="ml-4 mb-1.5 leading-relaxed">.*?<\/li>(?:\s*<li class="ml-4 mb-1.5 leading-relaxed">.*?<\/li>)*)/gs, '<ul class="list-disc list-inside mb-4 ml-4 space-y-1.5">$1</ul>');
     
     return formatted;
   };
@@ -168,13 +422,13 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
     }).filter(round => Object.keys(round).length > 0);
   };
 
-  const roundsData = extractRoundData(debate.performance_data || []);
-  const finalPerformance = roundsData[roundsData.length - 1]?.majority_vote || 0;
-  const averagePerformance = roundsData.reduce((acc, round) => acc + (round.majority_vote || 0), 0) / (roundsData.length || 1);
+  if (!currentRun) return null;
+
+  const roundsData = extractRoundData(currentRun.performance_data || []);
 
   const getAgentNames = () => {
     const agents = [];
-    const parsedArgs = debate.wandb_metadata?.parsed_args;
+    const parsedArgs = currentRun.wandb_metadata?.parsed_args;
     
     if (parsedArgs?.['agent_counts.0'] > 0 && parsedArgs?.['llm_conf@llm1']) {
       const agentName = parsedArgs['llm_conf@llm1'].toLowerCase();
@@ -204,8 +458,8 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
   };
 
   const getActualAgentNames = () => {
-    if (debate.result_data?.[0]?.debate_session?.rounds?.[0]?.responses) {
-      return Object.keys(debate.result_data[0].debate_session.rounds[0].responses);
+    if (currentRun.result_data?.[0]?.debate_session?.rounds?.[0]?.responses) {
+      return Object.keys(currentRun.result_data[0].debate_session.rounds[0].responses);
     }
     return getAgentNames();
   };
@@ -229,14 +483,16 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
   const agents = getAgentNames();
   const actualAgentNames = getActualAgentNames();
   const agentMapping = createAgentMapping();
+  const availableDatasets = getAvailableDatasets();
+  const datasetStats = getDatasetStats();
   
-  const numAgents = (debate.wandb_metadata?.parsed_args?.['agent_counts.0'] || 0) + 
-                   (debate.wandb_metadata?.parsed_args?.['agent_counts.1'] || 0) + 
-                   (debate.wandb_metadata?.parsed_args?.['agent_counts.2'] || 0);
-  const numRounds = (debate.wandb_metadata?.parsed_args?.['experiment.num_rounds'] || 0) + 1;
-  const numQuestions = debate.wandb_metadata?.parsed_args?.['experiment.num_questions'] || 0;
-  const datasets = debate.wandb_metadata?.parsed_args?.task?.split(',') || [];
-  const experimentName = debate.wandb_metadata?.parsed_args?.['experiment.name'] || `Experiment ${debate._id?.slice(-6)}`;
+  const numAgents = (currentRun.wandb_metadata?.parsed_args?.['agent_counts.0'] || 0) + 
+                   (currentRun.wandb_metadata?.parsed_args?.['agent_counts.1'] || 0) + 
+                   (currentRun.wandb_metadata?.parsed_args?.['agent_counts.2'] || 0);
+  const numRounds = (currentRun.wandb_metadata?.parsed_args?.['experiment.num_rounds'] || 0) + 1;
+  const datasets = currentRun.wandb_metadata?.parsed_args?.task?.split(',') || [];
+  const numQuestions = currentRun.wandb_metadata?.parsed_args?.['experiment.num_questions'] * datasets.length || 0;
+  const experimentName = currentRun.wandb_metadata?.parsed_args?.['experiment.name'] || `Experiment ${currentRun._id?.toString().slice(-6)}`;
   
   const formatDate = (dateString: string) => {
     if (!dateString) return 'Unknown';
@@ -275,17 +531,20 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
 
   const tabs = [
     { id: 'questions', label: 'Debates', icon: Scale },
+    { id: 'filter-incorrect', label: 'Analysis', icon: TrendingDown },
     { id: 'performance', label: 'Performance', icon: Trophy },
   ];
 
-  const agentColors = [
-    'bg-blue-50 border-blue-200',
-    'bg-purple-50 border-purple-200', 
-    'bg-orange-50 border-orange-200'
-  ];
+  const currentQuestionIndex = filteredQuestions.indexOf(selectedQuestion);
+  const totalFilteredQuestions = filteredQuestions.length;
+
+  const getCurrentQuestionSwitches = () => {
+    return incorrectSwitches.filter(s => s.questionIndex === selectedQuestion);
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* Header */}
       <div className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
           <div className="flex items-center justify-between mb-4">
@@ -296,37 +555,90 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
               <ArrowLeft className="w-5 h-5 mr-2" />
               Back to Dashboard
             </button>
-            <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getStatusColor(debate.status)}`}>
-              {debate.status === 'completed' && <CheckCircle className="w-4 h-4 inline mr-1" />}
-              {debate.status}
+            <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getStatusColor(currentRun.status)}`}>
+              {currentRun.status === 'completed' && <CheckCircle className="w-4 h-4 inline mr-1" />}
+              {currentRun.status}
             </span>
           </div>
           
           <div>
-            <h1 className="text-3xl font-bold text-gray-900 mb-3">{experimentName}</h1>
-            <div className="flex items-center space-x-6 text-sm text-gray-600">
-              <div className="flex items-center bg-gray-100 px-3 py-1 rounded-lg">
-                <Calendar className="w-4 h-4 mr-2" />
-                {formatDate(debate.wandb_metadata?.startedAt)}
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-slate-900 to-slate-700 bg-clip-text text-transparent mb-4">{experimentName}</h1>
+            <div className="flex items-center flex-wrap gap-3 text-sm">
+              <div className="flex items-center bg-white/70 backdrop-blur-sm px-4 py-2 rounded-xl border border-slate-200/50 shadow-sm hover:shadow-md transition-all duration-200">
+                <Calendar className="w-4 h-4 mr-2 text-blue-600" />
+                <span className="font-medium text-slate-700">{formatDate(currentRun.wandb_metadata?.startedAt)}</span>
               </div>
-              <div className="flex items-center bg-gray-100 px-3 py-1 rounded-lg">
-                <Users className="w-4 h-4 mr-2" />
-                {numAgents} agents
+              <div className="flex items-center bg-white/70 backdrop-blur-sm px-4 py-2 rounded-xl border border-slate-200/50 shadow-sm hover:shadow-md transition-all duration-200">
+                <Users className="w-4 h-4 mr-2 text-emerald-600" />
+                <span className="font-medium text-slate-700">{numAgents} agents</span>
               </div>
-              <div className="flex items-center bg-gray-100 px-3 py-1 rounded-lg">
-                <MessageSquare className="w-4 h-4 mr-2" />
-                {numRounds} rounds
+              <div className="flex items-center bg-white/70 backdrop-blur-sm px-4 py-2 rounded-xl border border-slate-200/50 shadow-sm hover:shadow-md transition-all duration-200">
+                <MessageSquare className="w-4 h-4 mr-2 text-purple-600" />
+                <span className="font-medium text-slate-700">{numRounds} rounds</span>
               </div>
-              <div className="flex items-center bg-gray-100 px-3 py-1 rounded-lg">
-                <FileText className="w-4 h-4 mr-2" />
-                {numQuestions} questions
+              <div className="flex items-center bg-white/70 backdrop-blur-sm px-4 py-2 rounded-xl border border-slate-200/50 shadow-sm hover:shadow-md transition-all duration-200">
+                <FileText className="w-4 h-4 mr-2 text-amber-600" />
+                <span className="font-medium text-slate-700">{numQuestions} questions</span>
               </div>
             </div>
           </div>
         </div>
       </div>
-
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        
+        {debateData.runs.length > 1 && (
+          <div className="bg-white rounded-lg shadow-sm p-6 mb-6 border border-gray-200">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+                <Database className="w-5 h-5 mr-2 text-blue-600" />
+                Select Run
+              </h3>
+              <div className="flex items-center space-x-4 text-sm text-gray-600">
+                <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-lg font-medium">
+                  Run {selectedRun + 1} of {debateData.runs.length}
+                </span>
+              </div>
+            </div>
+            
+            <div className="flex flex-wrap gap-3">
+              {debateData.runs.map((run, index) => {
+                const runInfo = getRunDisplayInfo(run);
+                
+                return (
+                  <button
+                    key={index}
+                    onClick={() => setSelectedRun(index)}
+                    className={`px-4 py-3 rounded-lg text-sm font-medium transition-all border ${
+                      selectedRun === index
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50 hover:border-gray-400'
+                    }`}
+                  >
+                    <div className="flex flex-col items-start">
+                      <span className="font-semibold">Run {index + 1}</span>
+                      <div className="flex items-center space-x-2 mt-1">
+                        <span className={`text-xs px-2 py-0.5 rounded ${
+                          selectedRun === index
+                            ? 'bg-blue-500 text-blue-100'
+                            : 'bg-gray-200 text-gray-600'
+                        }`}>
+                          {runInfo.dataset}
+                        </span>
+                        <span className={`text-xs px-2 py-0.5 rounded ${
+                          selectedRun === index
+                            ? 'bg-blue-500 text-blue-100'
+                            : 'bg-gray-200 text-gray-600'
+                        }`}>
+                          {runInfo.totalQuestions} questions
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
         <div className="bg-white rounded-lg shadow-sm mb-6 border border-gray-200">
           <div className="border-b border-gray-200">
             <nav className="flex space-x-8 px-6">
@@ -350,16 +662,14 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
             </nav>
           </div>
         </div>
-
         {activeTab === 'questions' && (
           <div className="space-y-6">
             <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
               <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold text-gray-900">Navigate Questions</h3>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  Navigate Questions
+                </h3>
                 <div className="flex items-center space-x-4">
-                  <span className="text-sm text-gray-600 bg-gray-100 px-3 py-1 rounded-lg font-medium">
-                    Question {selectedQuestion + 1} of {debate.result_data?.length || 0}
-                  </span>
                   <div className="flex space-x-2">
                     <Button
                       buttonStyle="secondary"
@@ -369,8 +679,14 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
                       iconColor="grey"
                       label="Previous"
                       size="md"
-                      onClick={() => setSelectedQuestion(Math.max(0, selectedQuestion - 1))}
-                      disabled={selectedQuestion === 0}
+                      onClick={() => {
+                        const prevIndex = currentQuestionIndex - 1;
+                        if (prevIndex >= 0) {
+                          setSelectedQuestion(filteredQuestions[prevIndex]);
+                          setSelectedRound(0);
+                        }
+                      }}
+                      disabled={currentQuestionIndex <= 0 || totalFilteredQuestions === 0}
                     />
                     <Button
                       buttonStyle="secondary"
@@ -381,30 +697,37 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
                       label="Next"
                       size="md"
                       onClick={() => {
-                          setSelectedQuestion(Math.min((debate.result_data?.length || 1) - 1, selectedQuestion + 1));
+                        const nextIndex = currentQuestionIndex + 1;
+                        if (nextIndex < totalFilteredQuestions) {
+                          setSelectedQuestion(filteredQuestions[nextIndex]);
                           setSelectedRound(0);
                         }
-                      }
-                      disabled={selectedQuestion >= (debate.result_data?.length || 1) - 1}
+                      }}
+                      disabled={currentQuestionIndex >= totalFilteredQuestions - 1 || totalFilteredQuestions === 0}
                     />
                   </div>
                 </div>
               </div>
             </div>
             
-            {debate.result_data?.[selectedQuestion] && (
+            {totalFilteredQuestions > 0 && currentRun.result_data?.[selectedQuestion] && (
               <div className="space-y-6">
                 <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
                   <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
                     <MessageSquare className="w-5 h-5 mr-2 text-blue-600" />
                     Question {selectedQuestion + 1}
+                    {currentRun.result_data[selectedQuestion].dataset && (
+                      <span className="ml-2 px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">
+                        {currentRun.result_data[selectedQuestion].dataset}
+                      </span>
+                    )}
                   </h3>
                   <div className="space-y-4">
                     <div>
                       <h4 className="font-medium text-gray-900 mb-3">Question:</h4>
                       <div className="text-gray-700 bg-gray-50 p-4 rounded-lg border border-gray-200 leading-relaxed">
                         <div dangerouslySetInnerHTML={{ 
-                          __html: formatText(debate.result_data[selectedQuestion].question) 
+                          __html: formatText(currentRun.result_data[selectedQuestion].question) 
                         }} />
                       </div>
                     </div>
@@ -414,7 +737,7 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
                         <div 
                           className="font-medium"
                           dangerouslySetInnerHTML={{ 
-                            __html: formatText(debate.result_data[selectedQuestion].correct_answer) 
+                            __html: formatText(currentRun.result_data[selectedQuestion].correct_answer) 
                           }}
                         />
                       </div>
@@ -422,15 +745,246 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-6">
-                  {actualAgentNames.map((agentName, index) => (
-                    <div key={agentName} className={`rounded-lg p-4 text-center border-2 ${agentColors[index]}`}>
-                      <h3 className="font-semibold text-gray-800 flex items-center justify-center">
-                        <Brain className="w-4 h-4 mr-2" />
-                        {agentName}
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+                  <div className="p-6 border-b border-gray-200">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-xl font-semibold text-gray-900 flex items-center">
+                        <PlayCircle className="w-5 h-5 mr-2 text-blue-600" />
+                        Agent Responses
                       </h3>
                     </div>
-                  ))}
+                    
+                    <div className="divide-y divide-gray-200">
+                      {Array.from({ length: numRounds }, (_, roundIndex) => (
+                        <div key={roundIndex} className="p-6">
+                          <div className="flex items-center justify-between mb-4">
+                            <h4 className="text-lg font-medium text-gray-900">Round {roundIndex + 1}</h4>
+                            <span className="text-sm text-gray-500 bg-gray-100 px-3 py-1 rounded-lg">
+                              {roundIndex === numRounds - 1 ? 'Final Round' : `Round ${roundIndex + 1} of ${numRounds}`}
+                            </span>
+                          </div>
+                          
+                          {currentRun.result_data[selectedQuestion].debate_session?.rounds?.[roundIndex] && (
+                            <div className="space-y-4">
+                              {actualAgentNames.map((agentName, index) => {
+                                const fullResponse = currentRun.result_data[selectedQuestion].debate_session.rounds[roundIndex].responses[agentName] || '';
+                                const truncatedResponse = truncateText(fullResponse);
+                                const isExpanded = expandedResponses[`${agentName}_${roundIndex}_expanded`];
+                                const displayResponse = isExpanded ? fullResponse : truncatedResponse;
+                                const isTruncated = fullResponse !== truncatedResponse;
+                                const isCollapsed = collapsedAgents[`${agentName}_${roundIndex}`];
+                                
+                                const evaluationKey = `${agentName}_${roundIndex}`;
+                                const evaluation = evaluationResults[evaluationKey];
+                                
+                                let borderColor = 'border-gray-200';
+                                let bgColor = 'bg-white';
+                                
+                                if (evaluation) {
+                                  if (evaluation.isCorrect) {
+                                    borderColor = 'border-green-400';
+                                    bgColor = 'bg-green-50';
+                                  } else {
+                                    borderColor = 'border-red-400';
+                                    bgColor = 'bg-red-50';
+                                  }
+                                }
+                                
+                                return (
+                                  <div 
+                                    key={`${agentName}_${roundIndex}`} 
+                                    className={`rounded-lg border-2 p-4 transition-all ${borderColor} ${bgColor}`}
+                                  >
+                                    <div className="flex items-center justify-between mb-3">
+                                      <div className="flex items-center space-x-2">
+                                        <Brain className="w-4 h-4" />
+                                        <h4 className="font-semibold text-gray-800">{agentName}</h4>
+                                      </div>
+                                      <button
+                                        onClick={() => toggleAgentCollapse(`${agentName}_${roundIndex}`)}
+                                        className="flex items-center text-gray-500 hover:text-gray-700 transition-colors"
+                                      >
+                                        {isCollapsed ? (
+                                          <>
+                                            <span className="text-sm mr-1">Expand</span>
+                                            <ChevronDown className="w-4 h-4" />
+                                          </>
+                                        ) : (
+                                          <>
+                                            <span className="text-sm mr-1">Collapse</span>
+                                            <ChevronUp className="w-4 h-4" />
+                                          </>
+                                        )}
+                                      </button>
+                                    </div>
+                                    
+                                    {!isCollapsed && (
+                                      <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-sm">
+                                        {/* Show detailed evaluation info */}
+                                        {evaluation && renderEvaluationBadge(evaluation)}
+                                        
+                                        {displayResponse ? (
+                                          <div>
+                                            <div 
+                                              className="text-sm leading-relaxed text-gray-700"
+                                              dangerouslySetInnerHTML={{ 
+                                                __html: formatText(displayResponse) 
+                                              }}
+                                            />
+                                            {isTruncated && (
+                                              <div className="mt-4 pt-3 border-t border-gray-200">
+                                                <button
+                                                  onClick={() => toggleResponseExpansion(agentName, roundIndex)}
+                                                  className={`flex items-center text-sm font-medium transition-colors ${
+                                                    isExpanded 
+                                                      ? 'text-gray-600 hover:text-gray-800' 
+                                                      : 'text-blue-600 hover:text-blue-800'
+                                                  }`}
+                                                >
+                                                  {isExpanded ? (
+                                                    <>
+                                                      <ChevronUp className="w-4 h-4 mr-1" />
+                                                      Show Less
+                                                    </>
+                                                  ) : (
+                                                    <>
+                                                      <ChevronDown className="w-4 h-4 mr-1" />
+                                                      Show Full Response
+                                                    </>
+                                                  )}
+                                                </button>
+                                              </div>
+                                            )}
+                                          </div>
+                                        ) : (
+                                          <div className="flex items-center justify-center h-20">
+                                            <span className="text-gray-400 italic">No response</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'filter-incorrect' && (
+          <div className="space-y-6">
+            {filteredQuestions.length > 0 && (
+              <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900">
+                    Navigate Filtered Questions
+                  </h3>
+                  <div className="flex items-center space-x-4">
+                    <span className="text-sm text-gray-600 bg-gray-100 px-3 py-1 rounded-lg">
+                      {currentQuestionIndex + 1} of {totalFilteredQuestions} questions
+                    </span>
+                    <div className="flex space-x-2">
+                      <Button
+                        buttonStyle="secondary"
+                        variant="outline"
+                        icon={ChevronLeft}
+                        iconPosition="start"
+                        iconColor="grey"
+                        label="Previous"
+                        size="md"
+                        onClick={() => {
+                          const prevIndex = currentQuestionIndex - 1;
+                          if (prevIndex >= 0) {
+                            setSelectedQuestion(filteredQuestions[prevIndex]);
+                            setSelectedRound(0);
+                          }
+                        }}
+                        disabled={currentQuestionIndex <= 0 || totalFilteredQuestions === 0}
+                      />
+                      <Button
+                        buttonStyle="secondary"
+                        variant="outline"
+                        icon={ChevronRight}
+                        iconPosition="start"
+                        iconColor="grey"
+                        label="Next"
+                        size="md"
+                        onClick={() => {
+                          const nextIndex = currentQuestionIndex + 1;
+                          if (nextIndex < totalFilteredQuestions) {
+                            setSelectedQuestion(filteredQuestions[nextIndex]);
+                            setSelectedRound(0);
+                          }
+                        }}
+                        disabled={currentQuestionIndex >= totalFilteredQuestions - 1 || totalFilteredQuestions === 0}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {totalFilteredQuestions > 0 && currentRun.result_data?.[selectedQuestion] && (
+              <div className="space-y-6">
+                <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
+                  <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
+                    <MessageSquare className="w-5 h-5 mr-2 text-blue-600" />
+                    Question {selectedQuestion + 1}
+                    {currentRun.result_data[selectedQuestion].dataset && (
+                      <span className="ml-2 px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">
+                        {currentRun.result_data[selectedQuestion].dataset}
+                      </span>
+                    )}
+                  </h3>
+
+                  {/* Show switches for this question */}
+                  {getCurrentQuestionSwitches().length > 0 && (
+                    <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4">
+                      <h4 className="font-medium text-red-900 mb-3 flex items-center">
+                        <TrendingDown className="w-4 h-4 mr-2" />
+                        Incorrect Switches in This Question:
+                      </h4>
+                      <div className="space-y-2">
+                        {getCurrentQuestionSwitches().map((switchInfo, index) => (
+                          <div key={index} className="flex items-center space-x-3 text-sm">
+                            <span className="font-medium text-red-900">{switchInfo.agentName}</span>
+                            <span className="text-red-700">
+                              switched from correct (Round {switchInfo.switchedFromRound + 1}) to incorrect (Round {switchInfo.switchedToRound + 1})
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-4">
+                    <div>
+                      <h4 className="font-medium text-gray-900 mb-3">Question:</h4>
+                      <div className="text-gray-700 bg-gray-50 p-4 rounded-lg border border-gray-200 leading-relaxed">
+                        <div dangerouslySetInnerHTML={{ 
+                          __html: formatText(currentRun.result_data[selectedQuestion].question) 
+                        }} />
+                      </div>
+                    </div>
+                    <div>
+                      <h4 className="font-medium text-gray-900 mb-3">Correct Answer:</h4>
+                      <div className="text-gray-700 bg-green-50 p-4 rounded-lg border-l-4 border-green-400 border border-green-200">
+                        <div 
+                          className="font-medium"
+                          dangerouslySetInnerHTML={{ 
+                            __html: formatText(currentRun.result_data[selectedQuestion].correct_answer) 
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200">
@@ -438,54 +992,139 @@ export default function DebateDetailsPage({ params }: { params: Promise<{ id: st
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-xl font-semibold text-gray-900 flex items-center">
                         <PlayCircle className="w-5 h-5 mr-2 text-blue-600" />
-                        Debate Rounds
+                        Agent Responses
                       </h3>
-                      <span className="text-sm text-gray-600 bg-gray-100 px-3 py-1 rounded-lg font-medium">
-                        Round {selectedRound + 1} of {numRounds}
-                      </span>
                     </div>
                     
-                    <div className="flex flex-wrap gap-2">
-                      {Array.from({ length: numRounds }, (_, i) => (
-                        <Button
-                          key={i}
-                          buttonStyle={selectedRound === i ? "primary" : "secondary"}
-                          variant={selectedRound === i ? "solid" : "outline"}
-                          label={`Round ${i + 1}`}
-                          onClick={() => setSelectedRound(i)}
-                        />
+                    <div className="divide-y divide-gray-200">
+                      {Array.from({ length: numRounds }, (_, roundIndex) => (
+                        <div key={roundIndex} className="p-6">
+                          <div className="flex items-center justify-between mb-4">
+                            <h4 className="text-lg font-medium text-gray-900">Round {roundIndex + 1}</h4>
+                            <span className="text-sm text-gray-500 bg-gray-100 px-3 py-1 rounded-lg">
+                              {roundIndex === numRounds - 1 ? 'Final Round' : `Round ${roundIndex + 1} of ${numRounds}`}
+                            </span>
+                          </div>
+                          
+                          {currentRun.result_data[selectedQuestion].debate_session?.rounds?.[roundIndex] && (
+                            <div className="space-y-4">
+                              {actualAgentNames.map((agentName, index) => {
+                                const fullResponse = currentRun.result_data[selectedQuestion].debate_session.rounds[roundIndex].responses[agentName] || '';
+                                const truncatedResponse = truncateText(fullResponse);
+                                const isExpanded = expandedResponses[`${agentName}_${roundIndex}_expanded`];
+                                const displayResponse = isExpanded ? fullResponse : truncatedResponse;
+                                const isTruncated = fullResponse !== truncatedResponse;
+                                const isCollapsed = collapsedAgents[`${agentName}_${roundIndex}`];
+                                
+                                const evaluationKey = `${agentName}_${roundIndex}`;
+                                const evaluation = evaluationResults[evaluationKey];
+                                
+                                const hasSwitched = getCurrentQuestionSwitches().some(s => 
+                                  s.agentName === agentName && 
+                                  (s.switchedFromRound === roundIndex || s.switchedToRound === roundIndex)
+                                );
+                                
+                                let borderColor = 'border-gray-200';
+                                let bgColor = 'bg-white';
+                                
+                                if (evaluation) {
+                                  if (evaluation.isCorrect) {
+                                    borderColor = hasSwitched ? 'border-orange-400' : 'border-green-400';
+                                    bgColor = hasSwitched ? 'bg-orange-50' : 'bg-green-50';
+                                  } else {
+                                    borderColor = hasSwitched ? 'border-red-500' : 'border-red-400';
+                                    bgColor = hasSwitched ? 'bg-red-100' : 'bg-red-50';
+                                  }
+                                }
+                                
+                                return (
+                                  <div 
+                                    key={`${agentName}_${roundIndex}`} 
+                                    className={`rounded-lg border-2 p-4 transition-all ${borderColor} ${bgColor} ${hasSwitched ? 'ring-2 ring-orange-300' : ''}`}
+                                  >
+                                    <div className="flex items-center justify-between mb-3">
+                                      <div className="flex items-center space-x-2">
+                                        <Brain className="w-4 h-4" />
+                                        <h4 className="font-semibold text-gray-800">{agentName}</h4>
+                                        {hasSwitched && (
+                                          <span className="px-2 py-1 bg-orange-200 text-orange-800 text-xs rounded-full flex items-center">
+                                            <TrendingDown className="w-3 h-3 mr-1" />
+                                            Switch Point
+                                          </span>
+                                        )}
+                                      </div>
+                                      <button
+                                        onClick={() => toggleAgentCollapse(`${agentName}_${roundIndex}`)}
+                                        className="flex items-center text-gray-500 hover:text-gray-700 transition-colors"
+                                      >
+                                        {isCollapsed ? (
+                                          <>
+                                            <span className="text-sm mr-1">Expand</span>
+                                            <ChevronDown className="w-4 h-4" />
+                                          </>
+                                        ) : (
+                                          <>
+                                            <span className="text-sm mr-1">Collapse</span>
+                                            <ChevronUp className="w-4 h-4" />
+                                          </>
+                                        )}
+                                      </button>
+                                    </div>
+                                    
+                                    {!isCollapsed && (
+                                      <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-sm">
+                                        {/* Show detailed evaluation info */}
+                                        {evaluation && renderEvaluationBadge(evaluation)}
+                                        
+                                        {displayResponse ? (
+                                          <div>
+                                            <div 
+                                              className="text-sm leading-relaxed text-gray-700"
+                                              dangerouslySetInnerHTML={{ 
+                                                __html: formatText(displayResponse) 
+                                              }}
+                                            />
+                                            {isTruncated && (
+                                              <div className="mt-4 pt-3 border-t border-gray-200">
+                                                <button
+                                                  onClick={() => toggleResponseExpansion(agentName, roundIndex)}
+                                                  className={`flex items-center text-sm font-medium transition-colors ${
+                                                    isExpanded 
+                                                      ? 'text-gray-600 hover:text-gray-800' 
+                                                      : 'text-blue-600 hover:text-blue-800'
+                                                  }`}
+                                                >
+                                                  {isExpanded ? (
+                                                    <>
+                                                      <ChevronUp className="w-4 h-4 mr-1" />
+                                                      Show Less
+                                                    </>
+                                                  ) : (
+                                                    <>
+                                                      <ChevronDown className="w-4 h-4 mr-1" />
+                                                      Show Full Response
+                                                    </>
+                                                  )}
+                                                </button>
+                                              </div>
+                                            )}
+                                          </div>
+                                        ) : (
+                                          <div className="flex items-center justify-center h-20">
+                                            <span className="text-gray-400 italic">No response</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
                       ))}
                     </div>
                   </div>
-
-                  {debate.result_data[selectedQuestion].debate_session?.rounds?.[selectedRound] && (
-                    <div className="p-6">
-                      <div className="grid grid-cols-3 gap-6">
-                        {actualAgentNames.map((agentName, index) => {
-                          const response = debate.result_data[selectedQuestion].debate_session.rounds[selectedRound].responses[agentName] || '';
-                          
-                          return (
-                            <div key={agentName} className={`rounded-lg border-2 p-6 ${agentColors[index]}`}>
-                              <div className="bg-white rounded-lg p-4 min-h-[200px] max-h-[400px] overflow-y-auto border border-gray-200 shadow-sm">
-                                {response ? (
-                                  <div 
-                                    className="text-sm leading-relaxed text-gray-700"
-                                    dangerouslySetInnerHTML={{ 
-                                      __html: formatText(response) 
-                                    }}
-                                  />
-                                ) : (
-                                  <div className="flex items-center justify-center h-full">
-                                    <span className="text-gray-400 italic">No response</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
             )}

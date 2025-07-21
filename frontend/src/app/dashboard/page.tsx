@@ -2,7 +2,7 @@
 import { useRouter } from 'next/navigation';
 import React, { useEffect, useState, useMemo } from 'react';
 import { Button } from '@/components/button/Button';
-import { User, LogOut, Plus, Clock, CheckCircle, Calendar, Filter, Search, X, ChevronDown, Users, MessageSquare, Activity, Brain, TrendingUp} from 'lucide-react';
+import { User, LogOut, Plus, Clock, CheckCircle, Calendar, Filter, Search, X, ChevronDown, Users, MessageSquare, Activity, Brain, TrendingUp, Shuffle} from 'lucide-react';
 
 interface Experiment {
   id: string;
@@ -16,6 +16,8 @@ interface Experiment {
   numRounds: number;
   numQuestions: number;
   hasHuman: boolean;
+  availableSeeds: string[];
+  selectedSeed: string;
   performance: {
     majority_vote: number;
     rounds_completed: number;
@@ -46,27 +48,6 @@ const Dashboard = () => {
   const participationOptions = ['With Human', 'AI Only'];
   
   const getInitialFilters = (): FilterState => {
-    if (typeof window === 'undefined') {
-      return {
-        searchTerm: '',
-        status: 'all',
-        selectedAgents: [],
-        selectedDatasets: [],
-        participationTypes: [],
-        numRounds: 0,
-        numAgents: 0
-      };
-    }
-
-    try {
-      const saved = localStorage.getItem('experiment-filters');
-      if (saved) {
-        return JSON.parse(saved);
-      }
-    } catch (error) {
-      console.error('Error loading saved filters:', error);
-    }
-
     return {
       searchTerm: '',
       status: 'all',
@@ -83,18 +64,7 @@ const Dashboard = () => {
   useEffect(() => {
     fetchExperiments();
   }, []);
-  useEffect(() => {
-    const saveFilters = () => {
-      try {
-        localStorage.setItem('experiment-filters', JSON.stringify(filters));
-      } catch (error) {
-        console.error('Error saving filters:', error);
-      }
-    };
 
-    const timeoutId = setTimeout(saveFilters, 500);
-    return () => clearTimeout(timeoutId);
-  }, [filters]);
   const fetchExperiments = async () => {
     try {
       setLoading(true);
@@ -105,13 +75,14 @@ const Dashboard = () => {
       }
       
       const data = await response.json();
+      console.log('API Response:', data);
       
-      if (data.success && data.finished_debates) {
-        const transformedExperiments = data.finished_debates
-          .map(transformExperiment)
-          .filter((exp: { datasets: string | string[]; }) => !exp.datasets.includes('General Debate'));
+      if (data.experiment_groups && Array.isArray(data.experiment_groups)) {
+        const transformedExperiments = data.experiment_groups.map(transformExperiment);
+        console.log('Transformed experiments:', transformedExperiments);
         setExperiments(transformedExperiments);
       } else {
+        console.warn('No experiments found in API response');
         setExperiments([]);
       }
     } catch (err) {
@@ -121,6 +92,32 @@ const Dashboard = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const parseAgentsFromExperimentName = (name: string): string[] => {
+    const agents: string[] = [];
+    const nameLower = name.toLowerCase();
+    
+    if (nameLower.includes('gpt')) agents.push('gpt-4o-mini');
+    if (nameLower.includes('mistral')) agents.push('mistral-7b');
+    if (nameLower.includes('meta') || nameLower.includes('llama')) agents.push('llama-3.1-8b-chat');
+    if (nameLower.includes('human')) agents.push('human');
+    
+    const matches = nameLower.match(/(\d+)(gpt|mistral|meta)/g);
+    if (matches) {
+      matches.forEach(match => {
+        const num = parseInt(match.match(/\d+/)?.[0] || '1');
+        const type = match.match(/(gpt|mistral|meta)/)?.[1];
+        
+        for (let i = 0; i < num; i++) {
+          if (type === 'gpt' && !agents.includes('gpt-4o-mini')) agents.push('gpt-4o-mini');
+          if (type === 'mistral' && !agents.includes('mistral-7b')) agents.push('mistral-7b');
+          if (type === 'meta' && !agents.includes('llama-3.1-8b-chat')) agents.push('llama-3.1-8b-chat');
+        }
+      });
+    }
+    
+    return agents.length > 0 ? agents : ['gpt-4o-mini'];
   };
 
   const parseDatasets = (topicString: string): string[] => {
@@ -135,57 +132,42 @@ const Dashboard = () => {
     return [topicString || 'General Debate'];
   };
 
-  const transformExperiment = (data: any): Experiment => {
-    const agents: string[] = [];
-    const parsedArgs = data.wandb_metadata?.parsed_args;
-    const agentKeys = [
-      { countKey: 'agent_counts.0', llmKey: 'llm_conf@llm1' },
-      { countKey: 'agent_counts.1', llmKey: 'llm_conf@llm2' },
-      { countKey: 'agent_counts.2', llmKey: 'llm_conf@llm3' }
-    ];
-
-    for (const { countKey, llmKey } of agentKeys) {
-      if (parsedArgs?.[countKey] > 0) {
-        const agentRaw = parsedArgs[llmKey];
-        if (agentRaw) {
-          const agentName = agentRaw.toLowerCase();
-          if (agentName.includes('gpt')) agents.push('gpt-4o-mini');
-          if (agentName.includes('llama')) agents.push('llama-3.1-8b-chat');
-          if (agentName.includes('mistral')) agents.push('mistral-7b');
-          if (agentName.includes('human')) agents.push('human');
-        }
-      }
-    }
-
-    const hasHuman = data.modelConfig?.Human?.length > 0 || false;
-    const experimentName = data.wandb_metadata?.parsed_args?.['experiment.name'] || `Experiment ${data._id?.slice(-6)}`;
-    const topicString = data.wandb_metadata?.parsed_args?.task || 'General Debate';
-    const datasets = parseDatasets(topicString);
-    const numRounds = (data.wandb_metadata?.parsed_args?.['experiment.num_rounds'] + 1);
+  const transformExperiment = (data: any): Experiment => {    
+    const experimentName = data.experiment_name || 'Unknown Experiment';
+    const agents = parseAgentsFromExperimentName(experimentName);
+    const datasets = parseDatasets(data.runs?.[0]?.wandb_metadata?.parsed_args?.['task']);
+    
+    const hasHuman = data.model_config?.Human?.length > 0 || false;
+    const numRounds = (data.runs?.[0]?.wandb_metadata?.parsed_args?.['experiment.num_rounds'] + 1);
     const numAgents = 
-      Number(data.wandb_metadata?.parsed_args?.['agent_counts.0'] || 0) +
-      Number(data.wandb_metadata?.parsed_args?.['agent_counts.1'] || 0) +
-      Number(data.wandb_metadata?.parsed_args?.['agent_counts.2'] || 0) +
+      Number(data.runs?.[0]?.wandb_metadata?.parsed_args?.['agent_counts.0'] || 0) +
+      Number(data.runs?.[0]?.wandb_metadata?.parsed_args?.['agent_counts.1'] || 0) +
+      Number(data.runs?.[0]?.wandb_metadata?.parsed_args?.['agent_counts.2'] || 0) +
       (hasHuman ? 1 : 0);
-    const numQuestions = data.wandb_metadata?.parsed_args?.['experiment.num_questions'] || 100;
+    const numQuestions = data.runs?.[0]?.wandb_metadata?.parsed_args?.['experiment.num_questions'] * datasets.length || 100;
     const lastRoundPerformance = data.performance_data?.[data.performance_data.length - 1] || {};
     const majorityVote = lastRoundPerformance.majority_vote || 0;
-
+    const isComplete = data.is_complete || false;
+    const completedRuns = data.completed_runs || 0;
+    const availableSeeds = data.seeds_present ? data.seeds_present.map(String) : ['0'];
+    
     return {
-      id: data._id,
+      id: data.experiment_name,
       name: experimentName,
       datasets: datasets,
       agents: agents,
-      status: data.status as 'completed' | 'in-progress',
-      endDate: formatDate(data.processed_at),
-      startDate: formatDate(data.wandb_metadata?.startedAt),
+      status: isComplete ? 'completed' : 'in-progress',
+      endDate: formatDate(data.last_updated),
+      startDate: formatDate(data.created_at),
       numAgents: numAgents,
       numRounds: numRounds,
       numQuestions: numQuestions,
       hasHuman: hasHuman,
+      availableSeeds: availableSeeds,
+      selectedSeed: availableSeeds[0] || '0',
       performance: {
         majority_vote: majorityVote,
-        rounds_completed: data.performance_data?.length || 0
+        rounds_completed: completedRuns
       },
       rawData: data
     };
@@ -203,6 +185,16 @@ const Dashboard = () => {
     } catch {
       return 'Unknown';
     }
+  };
+
+  const handleSeedChange = (experimentId: string, newSeed: string) => {
+    setExperiments(prev => 
+      prev.map(exp => 
+        exp.id === experimentId 
+          ? { ...exp, selectedSeed: newSeed }
+          : exp
+      )
+    );
   };
 
   const handleAgentToggle = (agent: string) => {
@@ -252,22 +244,22 @@ const Dashboard = () => {
       if (filters.selectedAgents.length > 0) {
         const expAgentList = [...exp.agents];
         if (exp.hasHuman) {
-          expAgentList.push('Human');
+          expAgentList.push('human');
         }
         
         const exactMatch = 
           expAgentList.length === filters.selectedAgents.length &&
           expAgentList.every(agent => {
             return filters.selectedAgents.some(selectedAgent => {
-              if (selectedAgent === 'Human') {
-                return agent === 'Human';
+              if (selectedAgent === 'human') {
+                return agent === 'human';
               }
               return agent.toLowerCase() === selectedAgent.toLowerCase();
             });
           }) &&
           filters.selectedAgents.every(selectedAgent => {
-            if (selectedAgent === 'Human') {
-              return expAgentList.includes('Human');
+            if (selectedAgent === 'human') {
+              return expAgentList.includes('human');
             }
             return expAgentList.some(agent => 
               agent.toLowerCase() === selectedAgent.toLowerCase()
@@ -299,11 +291,8 @@ const Dashboard = () => {
         return false;
       }
 
-      if (filters.numAgents > 0) {
-        const totalAgents = exp.numAgents + (exp.hasHuman ? 1 : 0);
-        if (totalAgents !== filters.numAgents) {
-          return false;
-        }
+      if (filters.numAgents > 0 && exp.numAgents !== filters.numAgents) {
+        return false;
       }
 
       return true;
@@ -311,23 +300,7 @@ const Dashboard = () => {
   }, [experiments, filters]);
 
   const clearFilters = () => {
-    const defaultFilters = {
-      searchTerm: '',
-      status: 'all',
-      selectedAgents: [],
-      selectedDatasets: [],
-      participationTypes: [],
-      numRounds: 0,
-      numAgents: 0
-    };
-    
-    setFilters(defaultFilters);
-    
-    try {
-      localStorage.removeItem('experiment-filters');
-    } catch (error) {
-      console.error('Error clearing saved filters:', error);
-    }
+    setFilters(getInitialFilters());
   };
 
   const hasActiveFilters = () => {
@@ -335,8 +308,7 @@ const Dashboard = () => {
            filters.status !== 'all' || 
            filters.selectedDatasets.length > 0 ||
            filters.participationTypes.length > 0 ||
-           filters.selectedAgents.length !== defaultAgents.length ||
-           !filters.selectedAgents.every(agent => defaultAgents.includes(agent)) ||
+           filters.selectedAgents.length > 0 ||
            filters.numRounds > 0 ||
            filters.numAgents > 0;
   };
@@ -346,12 +318,11 @@ const Dashboard = () => {
   };
   
   const handleViewExperiment = (experiment: Experiment) => {
-    router.push(`/debate/${experiment.id}`);
+    router.push(`/debate/${experiment.id}?seed=${experiment.selectedSeed}`);
   };
 
   const handleLogout = async () => {
     try {
-      localStorage.clear();
       router.push('/');
     } catch (error) {
       console.error('Logout error:', error);
@@ -614,18 +585,9 @@ const Dashboard = () => {
                           )}
                         </div>
                       </div>
-                      
-                      {experiment.performance.majority_vote > 0 && (
-                        <div className={`px-4 py-2 rounded-xl text-sm font-bold border ${getPerformanceColor(experiment.performance.majority_vote)}`}>
-                          <div className="flex items-center space-x-1">
-                            <TrendingUp className="w-4 h-4" />
-                            <span>{(experiment.performance.majority_vote * 100).toFixed(1)}%</span>
-                          </div>
-                        </div>
-                      )}
                     </div>
 
-                    <div className="space-y-3 mb-4">
+                    <div className="space-y-3">
                       <div className="flex items-center space-x-3">
                         <span className="text-sm font-medium text-slate-600 flex items-center space-x-1">
                           <span>Agents:</span>
@@ -645,24 +607,49 @@ const Dashboard = () => {
                       </div>
                       
                       <div className="flex items-center space-x-3">
-                          <span className="text-sm text-gray-600">Datasets:</span>
-                          <div className="flex flex-wrap gap-1">
-                            {experiment.datasets.map((dataset, index) => (
-                              <span key={index} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-medium">
-                                {dataset}
-                              </span>
-                            ))}
-                          </div>
+                        <span className="text-sm text-gray-600">Datasets:</span>
+                        <div className="flex flex-wrap gap-1">
+                          {experiment.datasets.map((dataset, index) => (
+                            <span key={index} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-medium">
+                              {dataset}
+                            </span>
+                          ))}
                         </div>
                       </div>
 
-                      {experiment.performance.majority_vote > 0 && (
-                        <div className={`px-3 py-1 rounded-full text-sm font-medium ${getPerformanceColor(experiment.performance.majority_vote)}`}>
-                          {(experiment.performance.majority_vote * 100).toFixed(1)}% accuracy
+                      <div className="flex items-center space-x-3">
+                        <span className="text-sm text-gray-600">Seeds:</span>
+                        <div className="flex flex-wrap gap-1">
+                          {experiment.availableSeeds.map((seed, index) => (
+                            <span
+                              key={index}
+                              onClick={() => handleSeedChange(experiment.id, seed)}
+                              className={`px-2 py-1 rounded text-xs font-medium cursor-pointer transition-colors ${
+                                seed === experiment.selectedSeed
+                                  ? 'bg-green-100 text-green-800 border border-green-200'
+                                : 'bg-gray-100 text-gray-700'
+                              }`}
+                            >
+                              {seed}
+                            </span>
+                          ))}
                         </div>
-                      )}
+                      </div>
                     </div>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+                  </div>
+
+                  {/* Right side with stats and button */}
+                  <div className="ml-6 flex flex-col items-end space-y-4">
+                    {/* Stats Grid */}
+                    <Button 
+                      buttonStyle="secondary"
+                      size="md"
+                      variant="solid"
+                      onClick={() => handleViewExperiment(experiment)}
+                    >
+                      View Details
+                    </Button>
+                    <div className="grid grid-cols-1 gap-2 text-right">
                       <div className="flex items-center text-sm text-gray-600">
                         <User className="w-4 h-4 mr-2 text-blue-500" />
                         <span className="font-medium">
@@ -675,23 +662,9 @@ const Dashboard = () => {
                       </div>
                       <div className="flex items-center text-sm text-gray-600">
                         <MessageSquare className="w-4 h-4 mr-2 text-purple-500" />
-                        <span className="font-medium">{experiment.numQuestions}  questions</span>
+                        <span className="font-medium">{experiment.numQuestions} questions</span>
                       </div>
-                      <div className="flex items-center text-sm text-gray-600">
-                        <Calendar className="w-4 h-4 mr-2 text-orange-500" />
-                        <span className="font-medium">{experiment.startDate ?? experiment.endDate}</span>
                     </div>
-                  </div>
-
-                  <div className="ml-6">
-                    <Button 
-                      buttonStyle="secondary"
-                      size="md"
-                      variant="solid"
-                      onClick={() => handleViewExperiment(experiment)}
-                    >
-                      View Details
-                    </Button>
                   </div>
                 </div>
               </div>

@@ -5,43 +5,34 @@
 **Prerequisites:**
 - Node.js (v18 or higher) - [Download from nodejs.org](https://nodejs.org/) | Check your version with `node -v`
 - pnpm package manager - Install with `npm install -g pnpm`
-- MongoDB Cloud account (free tier available) - [Sign up at mongodb.com](https://www.mongodb.com/cloud/atlas/register)
-- Python (for database population script) - [Download from python.org](https://www.python.org/downloads/)
+- PostgreSQL database - [Download from postgresql.org](https://www.postgresql.org/download/)
 
-### Setting Up MongoDB Cloud
+### Setting Up PostgreSQL
 
-1. **Create a MongoDB Cloud Account**
-   - Go to [mongodb.com/cloud/atlas](https://www.mongodb.com/cloud/atlas/register) and sign up for free
-   - Choose the free tier which provides 512 MB of storage at no cost
+1. **Install PostgreSQL**
+   - Download and install PostgreSQL from [postgresql.org](https://www.postgresql.org/download/)
+   - During installation, remember the password you set for the PostgreSQL superuser (postgres)
+   - The default port is 5432
 
-2. **Create a Database Cluster**
-   - After logging in, select the "FREE" tier
-   - Give your cluster a name (e.g., "debate-app")
-    - Choose your preferred cloud provider and region (closest to your location for better performance)
-   - Click "Create Deployment" and wait for deployment (takes 1-3 minutes)
+2. **Create a Database**
+   - Open PostgreSQL command line (psql) or use a GUI tool like pgAdmin
+   - Connect as the postgres user
+   - Create a new database for the project:
+   ```sql
+   CREATE DATABASE introspecter;
+   ```
 
-3. **Set Up Database Access**
-   - Go to "Database Access" in the left sidebar
-   - Click "Add New Database User"
-   - Choose "Password" authentication method
-   - Create a username and secure password (save these credentials!)
-   - Under "Database User Privileges", select "Read and write to any database"
-   - Click "Add User"
+3. **Create a Database User (Optional but Recommended)**
+   - Create a dedicated user for the application:
+   ```sql
+   CREATE USER your_username WITH PASSWORD 'your_password';
+   GRANT ALL PRIVILEGES ON DATABASE introspecter TO your_username;
+   ```
 
-4. **Configure Network Access**
-   - Go to "Network Access" in the left sidebar
-   - Click "Add IP Address"
-   - For development, you can click "Allow Access from Anywhere" (adds 0.0.0.0/0)
-   - For production, add only your specific IP addresses
-   - Click "Confirm"
-
-5. **Get Your Connection String**
-   - Go back to "Database" in the left sidebar
-   - Click "Connect" on your cluster
-   - Choose "Connect your application"
-   - Select "Node.js" as the driver and version 4.1 or later
-   - Copy the connection string (it looks like: `mongodb+srv://<username>:<password>@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority`)
-   - Replace `<username>` and `<password>` with the credentials you created in step 3
+4. **Get Your Connection String**
+   - Your database URL will look like: `postgresql://username:password@localhost:5432/introspecter`
+   - If using the default postgres user: `postgresql://postgres:your_password@localhost:5432/introspecter`
+   - If you created a dedicated user: `postgresql://your_username:your_password@localhost:5432/introspecter`
 
 ### Frontend Setup
 
@@ -66,21 +57,29 @@ pnpm install
 
 Create a `.env` file in the backend project root:
 ```env
-MONGO_URI=mongodb+srv://<username>:<password>@cluster0.xxxxx.mongodb.net/debate-app?retryWrites=true&w=majority
+DATABASE_URL=postgresql://username:password@localhost:5432/introspecter
 PORT=8000
 ```
 
-**Important**: Replace the `MONGO_URI` value with your actual connection string from MongoDB Cloud.
+**Important**: Replace the `DATABASE_URL` value with your actual PostgreSQL connection string.
 
-### Database Population
+### Database Setup and Population
 
-To populate the database with initial data:
+To set up the database schema and populate it with initial data:
+
+1. **Build the project (generates Prisma client and pushes schema to database):**
 ```bash
-cd web/scripts
-python logs.py --path="wandb_data" --mongo-uri="<your_mongodb_connection_string>"
+cd web/backend
+pnpm build
 ```
 
-Make sure to replace `<your_mongodb_connection_string>` with the same URI you used in your backend `.env` file.
+2. **Populate the database with initial data:**
+```bash
+cd web/backend
+node src/scripts/db_manager.js --path ../../wandb_data --database-url postgresql://username:password@localhost:5432/introspecter
+```
+
+Make sure to replace the `--database-url` parameter with your actual PostgreSQL connection string.
 
 ## Project Architecture
 
@@ -89,12 +88,13 @@ This is a full-stack web application built with modern JavaScript/TypeScript tec
 ### Technology Stack
 - **Frontend**: Next.js 13+ with App Router, React, TypeScript, Tailwind CSS
 - **Backend**: Node.js with Express.js, TypeScript
-- **Database**: MongoDB Cloud (NoSQL document database)
+- **Database**: PostgreSQL with Prisma ORM
+- **Database Migration**: Prisma for schema management and database operations
 
 ### How It Works
 1. **User Interface**: The Next.js frontend serves web pages and handles user interactions
 2. **API Communication**: Frontend makes HTTP requests to the Express.js backend
-3. **Data Storage**: Backend connects to MongoDB Cloud to store and retrieve data
+3. **Data Storage**: Backend connects to PostgreSQL database using Prisma ORM to store and retrieve data
 4. **Real-time Features**: Debate data is fetched and displayed dynamically
 
 ### Directory Structure
@@ -134,7 +134,12 @@ project-root/
     │   │   ├── debates/       # Debate-related endpoints (CRUD operations)
     │   │   ├── users/         # User-related endpoints (auth, profiles)
     │   │   └── routes.ts      # Main router configuration
+    │   ├── scripts/            # Database management and utility scripts
+    │   │   ├── db_manager.js  # Database population script
+    │   │   └── wandb_utils.js # Weights & Biases data processing utilities
     │   └── utils/              # Helper functions and utilities
+    ├── prisma/
+    │   └── schema.prisma       # Database schema definition
     ├── package.json            # Backend dependencies and scripts
     └── tsconfig.json           # TypeScript configuration
 ```
@@ -150,15 +155,23 @@ project-root/
 **Backend (Express.js)**
 - **RESTful API**: Follows REST principles for predictable API endpoints
 - **Middleware**: Functions that process requests before they reach route handlers
-- **Models**: Define how data is structured and stored in MongoDB
+- **Models**: Define how data is structured and stored in PostgreSQL
 - **Routes**: Handle different HTTP requests (GET, POST, PUT, DELETE)
+- **Prisma ORM**: Type-safe database client and schema management
 
-**Database (MongoDB)**
-- **Collections**: Like tables in SQL databases (e.g., "users", "debates")
-- **Documents**: Individual records stored as JSON-like objects
-- **Schema**: Structure definition for consistent data format
+**Database (PostgreSQL)**
+- **Tables**: Relational database tables (e.g., "debates", "llm_configs")
+- **Records**: Individual rows stored with structured data
+- **Schema**: Defined in Prisma schema file for type safety and migrations
 
 ## Running the Application
+
+**Build and Setup the Backend:**
+```bash
+cd web/backend
+pnpm install
+pnpm build
+```
 
 **Start the Backend Server:**
 ```bash
@@ -178,7 +191,8 @@ The web application will be available at http://localhost:3000. Please create a 
 
 - **Next.js Documentation**: [nextjs.org/docs](https://nextjs.org/docs)
 - **Express.js Guide**: [expressjs.com/en/guide](https://expressjs.com/en/guide/routing.html)
-- **MongoDB Atlas Tutorial**: [docs.mongodb.com/atlas](https://docs.mongodb.com/atlas/getting-started/)
+- **PostgreSQL Documentation**: [postgresql.org/docs](https://www.postgresql.org/docs/)
+- **Prisma Documentation**: [prisma.io/docs](https://www.prisma.io/docs/)
 - **TypeScript Handbook**: [typescriptlang.org/docs](https://www.typescriptlang.org/docs/)
 - **React Documentation**: [react.dev](https://react.dev/learn)
 
@@ -186,7 +200,18 @@ The web application will be available at http://localhost:3000. Please create a 
 
 **Common Issues:**
 
-1. **MongoDB Connection Errors**: Ensure your IP address is whitelisted in MongoDB Atlas Network Access
+1. **PostgreSQL Connection Errors**: 
+   - Ensure PostgreSQL is running on your system
+   - Verify the database URL in your `.env` file is correct
+   - Check that the database `introspecter` exists
+   - Ensure the user has proper permissions
+
 2. **Port Already in Use**: Change the PORT in your backend `.env` file if 8000 is occupied
+
 3. **pnpm Command Not Found**: Install pnpm globally with `npm install -g pnpm`
+
 4. **Node Version Issues**: Use Node.js v18 or higher; consider using nvm to manage versions
+
+5. **Prisma Client Generation Issues**: Run `pnpm build` to regenerate the Prisma client after schema changes
+
+6. **Database Schema Issues**: If you modify the schema, run `pnpm build` to push changes to the database
