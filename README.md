@@ -38,7 +38,7 @@
 
 To install the frontend dependencies:
 ```bash
-cd web/frontend
+cd frontend
 pnpm install
 ```
 
@@ -51,7 +51,7 @@ BACKEND_URL=http://localhost:8000
 
 To install the backend dependencies:
 ```bash
-cd web/backend
+cd backend
 pnpm install
 ```
 
@@ -69,13 +69,13 @@ To set up the database schema and populate it with initial data:
 
 1. **Build the project (generates Prisma client and pushes schema to database):**
 ```bash
-cd web/backend
+cd backend
 pnpm build
 ```
 
 2. **Populate the database with initial data:**
 ```bash
-cd web/backend
+cd backend
 node src/scripts/db_manager.js --path ../../wandb_data --database-url postgresql://username:password@localhost:5432/introspecter
 ```
 
@@ -168,21 +168,21 @@ project-root/
 
 **Build and Setup the Backend:**
 ```bash
-cd web/backend
+cd backend
 pnpm install
 pnpm build
 ```
 
 **Start the Backend Server:**
 ```bash
-cd web/backend
+cd backend
 pnpm run dev
 ```
 The API server will run on http://localhost:8000
 
 **Start the Frontend Development Server:**
 ```bash
-cd web/frontend
+cd frontend
 pnpm run dev
 ```
 The web application will be available at http://localhost:3000. Please create a username and password to login.
