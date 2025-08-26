@@ -208,7 +208,7 @@ export default function DebateDetailsPage() {
 
   const inferDatasetFromTask = (task: string): string => {
     if (!task) return 'unknown';
-    const lowerTask = task.toLowerCase();
+    const lowerTask = (task ?? '').toString().toLowerCase();
     if (lowerTask.includes('mmlu')) return 'mmlu';
     if (lowerTask.includes('gsm8k')) return 'gsm8k';
     if (lowerTask.includes('commonsense_qa')) return 'commonsense_qa';
@@ -220,17 +220,22 @@ export default function DebateDetailsPage() {
     if (!currentRun?.result_data) return [];
     
     const datasets = new Set<string>();
-    
+
+    // Collect from result_data
     currentRun.result_data.forEach(question => {
       if (question.dataset) {
-        datasets.add(question.dataset);
+        datasets.add(question.dataset.trim().toLowerCase());
       }
     });
-    
+
+    // Fallback: from wandb_metadata parsed_args
     if (datasets.size === 0) {
       const task = currentRun.wandb_metadata?.parsed_args?.task;
       if (task) {
-        const taskDatasets = task.split(',').map(t => t.trim().toLowerCase());
+        const taskDatasets = Array.isArray(task)
+          ? task.map(t => t.trim().toLowerCase())
+          : task.toString().split(',').map(t => t.trim().toLowerCase());
+        
         taskDatasets.forEach(dataset => {
           if (['mmlu', 'gsm8k', 'commonsense_qa', 'math'].includes(dataset)) {
             datasets.add(dataset);
@@ -238,9 +243,10 @@ export default function DebateDetailsPage() {
         });
       }
     }
-    
+
     return Array.from(datasets).sort();
   };
+
 
   const getDatasetDisplayName = (dataset: string): string => {
     const displayNames: { [key: string]: string } = {
@@ -249,7 +255,7 @@ export default function DebateDetailsPage() {
       'commonsense_qa': 'CommonsenseQA',
       'math': 'MATH'
     };
-    return displayNames[dataset] || dataset.toUpperCase();
+    return displayNames[dataset.toLowerCase()] || dataset.toUpperCase();
   };
 
   const getRunDisplayInfo = (run: DebateRun) => {
@@ -485,12 +491,20 @@ export default function DebateDetailsPage() {
   const agentMapping = createAgentMapping();
   const availableDatasets = getAvailableDatasets();
   const datasetStats = getDatasetStats();
-  
-  const numAgents = (currentRun.wandb_metadata?.parsed_args?.['agent_counts.0'] || 0) + 
-                   (currentRun.wandb_metadata?.parsed_args?.['agent_counts.1'] || 0) + 
-                   (currentRun.wandb_metadata?.parsed_args?.['agent_counts.2'] || 0);
+  const rawTask = currentRun.wandb_metadata?.parsed_args?.task;
+  const parsedArgs = currentRun.wandb_metadata?.parsed_args as Record<string, any>;
+  const flatAgentCounts = [0, 1, 2].map(i => parsedArgs[`agent_counts.${i}`] ?? 0);
+  const arrayAgentCounts: number[] = Array.isArray(parsedArgs.agent_counts)
+    ? parsedArgs.agent_counts
+    : [];
+  const agentCounts = arrayAgentCounts.length > 0 ? arrayAgentCounts : flatAgentCounts;
+  const numAgents = agentCounts.reduce((sum, count) => sum + count, 0);
   const numRounds = (currentRun.wandb_metadata?.parsed_args?.['experiment.num_rounds'] || 0) + 1;
-  const datasets = currentRun.wandb_metadata?.parsed_args?.task?.split(',') || [];
+  const datasets = rawTask
+  ? (Array.isArray(rawTask)
+      ? rawTask.map(t => t.toString().trim())
+      : rawTask.toString().split(',').map(t => t.trim()))
+  : [];
   const numQuestions = currentRun.wandb_metadata?.parsed_args?.['experiment.num_questions'] * datasets.length || 0;
   const experimentName = currentRun.wandb_metadata?.parsed_args?.['experiment.name'] || `Experiment ${currentRun._id?.toString().slice(-6)}`;
   
@@ -570,15 +584,17 @@ export default function DebateDetailsPage() {
               </div>
               <div className="flex items-center bg-white/70 backdrop-blur-sm px-4 py-2 rounded-xl border border-slate-200/50 shadow-sm hover:shadow-md transition-all duration-200">
                 <Users className="w-4 h-4 mr-2 text-emerald-600" />
-                <span className="font-medium text-slate-700">{numAgents} agents</span>
+                <span className="font-medium text-slate-700">
+                  {numAgents > 1 ? `${numAgents} agents` : `${numAgents} agent`}
+                </span>
               </div>
               <div className="flex items-center bg-white/70 backdrop-blur-sm px-4 py-2 rounded-xl border border-slate-200/50 shadow-sm hover:shadow-md transition-all duration-200">
                 <MessageSquare className="w-4 h-4 mr-2 text-purple-600" />
-                <span className="font-medium text-slate-700">{numRounds} rounds</span>
+                <span className="font-medium text-slate-700">{numRounds > 1 ? `${numRounds} rounds` : `${numRounds} round`}</span>
               </div>
               <div className="flex items-center bg-white/70 backdrop-blur-sm px-4 py-2 rounded-xl border border-slate-200/50 shadow-sm hover:shadow-md transition-all duration-200">
                 <FileText className="w-4 h-4 mr-2 text-amber-600" />
-                <span className="font-medium text-slate-700">{numQuestions} questions</span>
+                <span className="font-medium text-slate-700">{numQuestions > 1 ? `${numQuestions} questions` : `${numQuestions} question`}</span>
               </div>
             </div>
           </div>

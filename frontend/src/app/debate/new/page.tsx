@@ -1,8 +1,7 @@
 "use client";
 import { useState } from 'react';
 import { Users, MessageSquare, FileText, Settings, Brain, User, PlayCircle, Clock, CheckCircle, Plus, Trash2, ArrowLeft, AlertTriangle } from 'lucide-react';
-
-export default function NewDebatePage() {
+import DebateProgressMonitor from '../../../utils/DebateProgressMonitor';
 
 interface AgentConfig {
   id: string;
@@ -16,15 +15,18 @@ interface DebateFormData {
   experimentName: string;
   numQuestions: number;
   numRounds: number;
+  seeds: number[];
   agents: AgentConfig[];
   customQuestions: string[];
   selectedDatasets: string[];
 }
 
+export default function NewDebatePage() {
   const [formData, setFormData] = useState<DebateFormData>({
     experimentName: '',
     numQuestions: 100,
     numRounds: 3,
+    seeds: [],
     agents: [
       { id: 'agent1', name: 'Agent 1', model: 'gpt-4o-mini', enabled: true },
     ],
@@ -33,17 +35,17 @@ interface DebateFormData {
   });
 
   const [isCreating, setIsCreating] = useState(false);
-  const [createdDebateId, setCreatedDebateId] = useState<string | null>(null);
+  const [createdDebateData, setCreatedDebateData] = useState<any>(null);
   const [showCustomQuestions, setShowCustomQuestions] = useState(false);
+  const [showProgressMonitor, setShowProgressMonitor] = useState(false);
 
   const availableModels = [
     'gpt-4o-mini',
     'llama-3.1-8b-chat',
     'mistral-7b',
-    'claude-3-sonnet',
     'human-participant'
   ];
-
+  
   const availableDatasets = [
     { value: 'gsm8k', label: 'GSM8K (Math Word Problems)' },
     { value: 'mmlu', label: 'MMLU (Massive Multitask Language Understanding)' },
@@ -52,7 +54,7 @@ interface DebateFormData {
   ];
 
   // Validation constants
-  const MAX_QUESTIONS = 8500;
+  const MAX_QUESTIONS = 1000;
   const MAX_ROUNDS = 10;
 
   // Validation helpers
@@ -60,7 +62,12 @@ interface DebateFormData {
   const isRoundsExceeded = () => formData.numRounds > MAX_ROUNDS;
 
   const handleBackToDashboard = () => {
-    window.history.back();
+    if (showProgressMonitor) {
+      setShowProgressMonitor(false);
+      setCreatedDebateData(null);
+    } else {
+      window.history.back();
+    }
   };
 
   const addAgent = () => {
@@ -162,49 +169,33 @@ interface DebateFormData {
         experimentName: formData.experimentName,
         totalQuestions: getTotalQuestions(),
         numRounds: formData.numRounds,
+        seeds: formData.seeds.length > 0 ? formData.seeds : [1], // Default seed if none selected
         agents: getEnabledAgents(),
         selectedDatasets: formData.selectedDatasets.filter(d => d !== 'custom'),
         customQuestions: formData.customQuestions.filter(q => q.trim()),
-        status: 'in-progress',
+        status: 'pending',
         createdAt: new Date().toISOString()
       };
 
-      // Mock API response
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      const mockDebateId = `debate_${Date.now()}`;
-      setCreatedDebateId(mockDebateId);
-      
-      // Redirect to debate page after a short delay
-      setTimeout(() => {
-        // In a real app, you'd use router.push() here
-        console.log('Would redirect to:', `/debates/${mockDebateId}`);
-        alert(`Debate created! Would redirect to /debates/${mockDebateId}`);
-      }, 1500);
+      // Store the debate data and show progress monitor
+      setCreatedDebateData(debateData);
+      setShowProgressMonitor(true);
       
     } catch (error) {
-      console.error('Failed to create debate:', error);
-      alert('Failed to create debate. Please try again.');
+      console.error('Failed to prepare debate:', error);
+      alert('Failed to prepare debate. Please try again.');
     } finally {
       setIsCreating(false);
     }
   };
 
-  if (createdDebateId) {
+  // Show progress monitor if debate was created
+  if (showProgressMonitor && createdDebateData) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="bg-white rounded-lg shadow-lg p-8 text-center max-w-md">
-          <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-            <CheckCircle className="w-8 h-8 text-green-600" />
-          </div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Debate Created!</h2>
-          <p className="text-gray-600 mb-6">
-            Your debate "{formData.experimentName}" has been successfully created.
-          </p>
-          <div className="animate-pulse">
-            <p className="text-sm text-blue-600">Redirecting to debate page...</p>
-          </div>
-        </div>
-      </div>
+      <DebateProgressMonitor 
+        debateData={createdDebateData} 
+        onBack={() => setShowProgressMonitor(false)}
+      />
     );
   }
 
@@ -248,7 +239,7 @@ interface DebateFormData {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
                 </div>
-
+                
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -302,6 +293,42 @@ interface DebateFormData {
                         </span>
                       </div>
                     )}
+                  </div>
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Random Seed
+                  </label>
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap gap-2">
+                      {[1, 2, 3, 4].map(seed => (
+                        <label key={seed} className="flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formData.seeds.includes(seed)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setFormData(prev => ({ 
+                                  ...prev, 
+                                  seeds: [...prev.seeds, seed].sort() 
+                                }));
+                              } else {
+                                setFormData(prev => ({ 
+                                  ...prev, 
+                                  seeds: prev.seeds.filter(s => s !== seed) 
+                                }));
+                              }
+                            }}
+                            className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                          />
+                          <span className="ml-2 text-sm text-gray-700">{seed}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      Select one or more seeds (1-4) for reproducible random sampling
+                    </p>
                   </div>
                 </div>
               </div>
@@ -394,7 +421,7 @@ interface DebateFormData {
               {getEnabledAgents().length < 1 && (
                 <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
                   <p className="text-yellow-800 text-sm">
-                    ⚠️ At least 1 agent must be enabled to create a debate.
+                    At least 1 agent must be enabled to create a debate.
                   </p>
                 </div>
               )}
@@ -500,6 +527,9 @@ interface DebateFormData {
                     <li><strong>Name:</strong> {formData.experimentName || 'Not set'}</li>
                     <li><strong>Total Questions:</strong> {getTotalQuestions()}</li>
                     <li><strong>Rounds:</strong> {formData.numRounds}</li>
+                    {formData.seeds.length > 0 && (
+                      <li><strong>Seeds:</strong> {formData.seeds.join(', ')}</li>
+                    )}
                     <li><strong>Datasets:</strong> {formData.selectedDatasets.filter(d => d !== 'custom').length > 0 ? formData.selectedDatasets.filter(d => d !== 'custom').map(d => availableDatasets.find(ds => ds.value === d)?.label).join(', ') : 'None selected'}</li>
                     {formData.customQuestions.filter(q => q.trim()).length > 0 && (
                       <li><strong>Custom Questions:</strong> {formData.customQuestions.filter(q => q.trim()).length}</li>

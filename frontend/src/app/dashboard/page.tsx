@@ -126,9 +126,9 @@ const Dashboard = () => {
       return topicString.split(',').map(dataset => dataset.trim());
     }    
     const knownDatasets = ['gsm8k', 'mmlu', 'commonsense_qa'];
-    if (knownDatasets.includes(topicString.toLowerCase())) {
+    if (typeof topicString === 'string' && knownDatasets.includes(topicString.toLowerCase())) {
       return [topicString];
-    }    
+    }
     return [topicString || 'General Debate'];
   };
 
@@ -230,7 +230,9 @@ const Dashboard = () => {
         const searchTerm = filters.searchTerm.toLowerCase();
         if (
           !exp.name.toLowerCase().includes(searchTerm) &&
-          !exp.datasets.some(dataset => dataset.toLowerCase().includes(searchTerm)) &&
+          !(exp.datasets ?? []).some(
+              dataset => typeof dataset === "string" && dataset.toLowerCase().includes(searchTerm)
+            ) &&
           !exp.agents.some(agent => agent.toLowerCase().includes(searchTerm))
         ) {
           return false;

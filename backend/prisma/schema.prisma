@@ -20,14 +20,14 @@ model LlmConfig {
   temperature Float?
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
-  
-  debates     Debate[]
-  
+  debates     Debate[] @relation("DebateToLlmConfig")
+
   @@map("llm_configs")
 }
 
 model Debate {
   id              Int         @id @default(autoincrement())
+  experimentId      String?     @unique
   seed            Int?
   datasetName     String?     @map("dataset_name")
   status          String      @default("completed")
@@ -37,8 +37,8 @@ model Debate {
   processedAt     DateTime    @map("processed_at")
   createdAt       DateTime    @default(now()) @map("created_at")
   updatedAt       DateTime    @updatedAt @map("updated_at")
-  
-  llmConfigs      LlmConfig[]
-  
+  llmConfigs      LlmConfig[] @relation("DebateToLlmConfig")
+
+  @@unique([datasetName, seed, createdAt])
   @@map("debates")
 }

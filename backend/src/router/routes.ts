@@ -5,6 +5,8 @@ export const debateRoutePrefix = '/debate'
 export enum debateRoutes {
   GetAllDebates = '/all-debates',
   GetSingleDebate = '/single-debate',
+  GetNewDebate = '/new-debate',
+  GetResults = '/:expId/results',
 }
 
 export enum userRoutes {

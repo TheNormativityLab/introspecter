@@ -80,6 +80,22 @@ export const getAllDebates = async (req: Request, res: Response): Promise<Respon
         experimentName = debate.llmConfigs.map(c => c.modelName).sort().join('_vs_');
       }
       if (!experimentGroups.has(experimentName)) {
+        const expected_seeds = (() => {
+          if (
+            typeof debate.wandbMetadata === 'object' &&
+            debate.wandbMetadata !== null &&
+            'parsed_args' in debate.wandbMetadata &&
+            (debate.wandbMetadata as any).parsed_args
+          ) {
+            const seedRaw = (debate.wandbMetadata as any).parsed_args?.["seed"];
+            return seedRaw
+              ? (Array.isArray(seedRaw)
+                  ? seedRaw.map(Number)
+                  : seedRaw.toString().split(',').map(Number))
+              : [];
+          }
+          return [];
+        })();
         experimentGroups.set(experimentName, {
           experiment_name: experimentName,
           dataset_name: debate.datasetName, 
@@ -102,13 +118,7 @@ export const getAllDebates = async (req: Request, res: Response): Promise<Respon
           completed_runs: 0,
           failed_runs: 0,
           seeds_present: new Set(),
-          expected_seeds: typeof debate.wandbMetadata === 'object' &&
-                debate.wandbMetadata !== null &&
-                'parsed_args' in debate.wandbMetadata &&
-                (debate.wandbMetadata as any).parsed_args &&
-                (debate.wandbMetadata as any).parsed_args["seed"]
-                  ? (debate.wandbMetadata as any).parsed_args["seed"].split(',').map(Number)
-                  : [],
+          expected_seeds: expected_seeds,
           created_at: debate.processedAt,
           last_updated: debate.processedAt
         });

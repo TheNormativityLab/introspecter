@@ -215,7 +215,7 @@ async function main() {
     .name('db-manager')
     .description('Process wandb data and insert into PostgreSQL')
     .option('-d, --database-url <url>', 'PostgreSQL connection URL')
-    .option('-p, --path <path>', 'Path to wandb data directory', './wandb_data')
+    .option('-p, --path <path>', 'Path to wandb data directory', '../../wandb_data')
     .option('--dry-run', 'Process data without inserting into database')
     .allowUnknownOption()
     .parse();
