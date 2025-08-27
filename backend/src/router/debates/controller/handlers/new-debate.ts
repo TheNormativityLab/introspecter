@@ -122,11 +122,11 @@ async function syncDebateWithFastAPI(debateData: DebateData, experimentId: strin
       }
     });
     
-    logger.info(`✅ Created new debate record with ID: ${debate.id} (experimentId: ${experimentId}, status: ${status})`);
+    logger.info(`Created new debate record with ID: ${debate.id} (experimentId: ${experimentId}, status: ${status})`);
     return debate;
     
   } catch (error) {
-    logger.error('❌ Error syncing debate record with FastAPI:', error);
+    logger.error('Error syncing debate record with FastAPI:', error);
     
     // If it's a unique constraint error, try to find existing record
     if (typeof error === 'object' && error !== null && 'code' in error && (error as any).code === 'P2002') {
@@ -481,6 +481,7 @@ export const getExperimentResults = async (req: Request, res: Response): Promise
   try {
     const { expId } = req.params;
     logger.info(`Getting results for experiment: ${expId}`);    
+    
     try {
       logger.info('Performing health check before results request...');
       await axios.get(`${FASTAPI_BASE_URL}/health`, { timeout: 5000 });
@@ -526,20 +527,125 @@ export const getExperimentResults = async (req: Request, res: Response): Promise
       });
     }
 
-    await prisma.debate.updateMany({
-      where: { experimentId: expId },
-      data: { 
-        status: 'completed',
-        resultData: response.data.resultData,
-        performanceData: response.data.performanceData,
-        wandbMetadata: response.data.wandbMetadata,
-        processedAt: new Date()
+    if (response.data.runs && typeof response.data.runs === 'object') {
+      logger.info(`Processing multi-run experiment with ${Object.keys(response.data.runs).length} combinations`);
+      
+      const originalDebate = await prisma.debate.findFirst({
+        where: { experimentId: expId },
+        include: { llmConfigs: true }
+      });
+
+      const runKeys = Object.keys(response.data.runs);
+      logger.info(`Processing multi-run experiment combinations: ${runKeys.join(', ')}`);
+
+      for (const comboKey of runKeys) {
+        const runData = response.data.runs[comboKey];
+        const [datasetName, seedPart] = comboKey.split('_seed');
+        const seed = parseInt(seedPart);
+        
+        if (!datasetName || isNaN(seed)) {
+          logger.warn(`Invalid combination key format: ${comboKey}, skipping...`);
+          continue;
+        }
+        
+        try {
+          let debateRecord = await prisma.debate.findFirst({
+            where: { 
+              experimentId: expId,
+              datasetName: datasetName,
+              seed: seed
+            }
+          });
+
+          const transformedWandbMetadata = runData.wandbMetadata ? {
+            ...runData.wandbMetadata,
+            parsed_args: Array.isArray(runData.wandbMetadata.parsed_args) && runData.wandbMetadata.parsed_args.length >= 0
+              ? runData.wandbMetadata.parsed_args[0]
+              : runData.wandbMetadata.parsed_args
+          } : null;
+
+          const updateData = {
+            status: 'completed',
+            resultData: runData.resultData || null,
+            performanceData: runData.performanceData || null,
+            wandbMetadata: transformedWandbMetadata,
+            processedAt: new Date()
+          };
+
+          if (debateRecord) {
+            await prisma.debate.update({
+              where: { id: debateRecord.id },
+              data: updateData
+            });
+            logger.info(`Updated existing record for ${datasetName} seed ${seed}`);
+          } else {
+            debateRecord = await prisma.debate.create({
+              data: {
+                experimentId: expId,
+                seed: seed,
+                datasetName: datasetName,
+                createdAt: new Date(),
+                ...updateData,
+                llmConfigs: originalDebate?.llmConfigs ? {
+                  connect: originalDebate.llmConfigs.map(config => ({ id: config.id }))
+                } : undefined
+              }
+            });
+            logger.info(`Created new record for ${datasetName} seed ${seed} with ID: ${debateRecord.id}`);
+          }
+          
+          logger.info(`Processed ${comboKey}: dataset=${datasetName}, seed=${seed}`);
+          
+          if (runData.resultData) {
+            logger.info(`Result data available for ${comboKey}`);
+          } else {
+            logger.warn(`No result data found for ${comboKey}`);
+          }
+          
+          if (runData.performanceData) {
+            logger.info(`Performance data available for ${comboKey}`);
+          } else {
+            logger.warn(`No performance data found for ${comboKey}`);
+          }
+          
+        } catch (dbError) {
+          logger.error(`Error processing ${comboKey}:`, dbError);
+        }
       }
-    });
-    logger.info(`Successfully retrieved results for experiment ${expId}`);
+ 
+    } else if (response.data.resultData && response.data.performanceData) {
+      logger.info('Processing single run experiment');
+      
+      await prisma.debate.updateMany({
+        where: { experimentId: expId },
+        data: { 
+          status: 'completed',
+          resultData: response.data.resultData,
+          performanceData: response.data.performanceData,
+          wandbMetadata: response.data.wandbMetadata,
+          processedAt: new Date()
+        }
+      });
+      logger.info('Updated single run experiment');
+    } else {
+      logger.warn(`No valid data structure found in response for experiment ${expId}`);
+      logger.info(`Response data keys: ${Object.keys(response.data).join(', ')}`);
+      
+      await prisma.debate.updateMany({
+        where: { experimentId: expId },
+        data: { 
+          status: 'completed',
+          wandbMetadata: response.data.wandbMetadata || null,
+          processedAt: new Date()
+        }
+      });
+    }
+    
+    logger.info(`Successfully retrieved and stored results for experiment ${expId}`);
     return res.status(200).json(response.data);
     
   } catch (error: any) {
+    logger.error(`Error in getExperimentResults for ${req.params.expId}:`, error);
     return handleAxiosError(error, 'Get Experiment Results', res);
   }
 };

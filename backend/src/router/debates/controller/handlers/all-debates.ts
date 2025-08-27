@@ -68,34 +68,12 @@ export const getAllDebates = async (req: Request, res: Response): Promise<Respon
     const experimentGroups = new Map();
     
     allDebates.forEach(debate => {
-      let experimentName =
-        typeof debate.wandbMetadata === 'object' &&
-        debate.wandbMetadata !== null &&
-        'parsed_args' in debate.wandbMetadata &&
-        (debate.wandbMetadata as any).parsed_args &&
-        (debate.wandbMetadata as any).parsed_args["experiment.name"]
-          ? (debate.wandbMetadata as any).parsed_args["experiment.name"]
-          : undefined;
-      if (!experimentName) {
-        experimentName = debate.llmConfigs.map(c => c.modelName).sort().join('_vs_');
-      }
+      // Extract experiment name from the new structure
+      let experimentName = extractExperimentName(debate.wandbMetadata, debate.llmConfigs);
+      
       if (!experimentGroups.has(experimentName)) {
-        const expected_seeds = (() => {
-          if (
-            typeof debate.wandbMetadata === 'object' &&
-            debate.wandbMetadata !== null &&
-            'parsed_args' in debate.wandbMetadata &&
-            (debate.wandbMetadata as any).parsed_args
-          ) {
-            const seedRaw = (debate.wandbMetadata as any).parsed_args?.["seed"];
-            return seedRaw
-              ? (Array.isArray(seedRaw)
-                  ? seedRaw.map(Number)
-                  : seedRaw.toString().split(',').map(Number))
-              : [];
-          }
-          return [];
-        })();
+        const expected_seeds = extractExpectedSeeds(debate.wandbMetadata);
+        
         experimentGroups.set(experimentName, {
           experiment_name: experimentName,
           dataset_name: debate.datasetName, 
@@ -193,6 +171,153 @@ export const getAllDebates = async (req: Request, res: Response): Promise<Respon
     });
   } catch (error) {
     logger.error('Get all debates error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+};
+
+function extractExperimentName(wandbMetadata: any, llmConfigs: any[]): string {
+  if (!wandbMetadata || typeof wandbMetadata !== 'object') {
+    return llmConfigs.map(c => c.modelName).sort().join('_vs_');
+  }
+
+  if (Array.isArray(wandbMetadata.parsed_args) && wandbMetadata.parsed_args.length > 0) {
+    const firstConfig = wandbMetadata.parsed_args[0];
+    return firstConfig['experiment.name'] || llmConfigs.map(c => c.modelName).sort().join('_vs_');
+  }
+  
+  if (wandbMetadata.parsed_args && typeof wandbMetadata.parsed_args === 'object') {
+    return wandbMetadata.parsed_args['experiment.name'] || llmConfigs.map(c => c.modelName).sort().join('_vs_');
+  }
+
+  return llmConfigs.map(c => c.modelName).sort().join('_vs_');
+}
+
+function extractExpectedSeeds(wandbMetadata: any): number[] {
+  if (!wandbMetadata || typeof wandbMetadata !== 'object') {
+    return [];
+  }
+
+  let seedRaw: any;
+
+  if (Array.isArray(wandbMetadata.parsed_args) && wandbMetadata.parsed_args.length > 0) {
+    return [];
+  }
+  
+  if (wandbMetadata.parsed_args && typeof wandbMetadata.parsed_args === 'object') {
+    seedRaw = wandbMetadata.parsed_args['seed'];
+  }
+
+  if (seedRaw) {
+    return Array.isArray(seedRaw)
+      ? seedRaw.map(Number)
+      : seedRaw.toString().split(',').map(Number);
+  }
+
+  return [];
+}
+
+export const getSingleDebate = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    const { experimentName, seed } = req.query;   
+    logger.info(`Attempt to retrieve all runs from experiment: ${experimentName} with seed: ${seed}`);
+    
+    if (!experimentName) {
+      return res.status(400).json({
+        success: false,
+        errors: { experimentName: ['Experiment name is required'] }
+      });
+    }
+
+    if (!seed) {
+      return res.status(400).json({
+        success: false,
+        errors: { seed: ['Seed is required'] }
+      });
+    }
+    
+    const experimentNameValue = Array.isArray(experimentName) ? experimentName[0] : experimentName;
+    const seedValue = Array.isArray(seed) ? seed[0] : seed;
+    const seedNumber = Number(seedValue);
+    
+    if (isNaN(seedNumber)) {
+      return res.status(400).json({
+        success: false,
+        errors: { seed: ['Seed must be a valid number'] }
+      });
+    }
+
+    let matchingDebates = await prisma.debate.findMany({
+      where: {
+        AND: [
+          {
+            wandbMetadata: {
+              not: null
+            }
+          },
+          {
+            seed: seedNumber
+          }
+        ]
+      },
+      include: {
+        llmConfigs: {
+          select: {
+            id: true,
+            modelName: true,
+            model: true,
+            apiBase: true,
+            timeout: true,
+            numRetries: true,
+            rpm: true,
+            topP: true,
+            maxTokens: true,
+            temperature: true
+          }
+        }
+      },
+      orderBy: {
+        processedAt: 'desc'
+      }
+    });
+
+    matchingDebates = matchingDebates.filter(debate => {
+      const debateExperimentName = extractExperimentName(debate.wandbMetadata, debate.llmConfigs);
+      return debateExperimentName === experimentNameValue;
+    });
+
+    if (matchingDebates.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `No runs found for experiment '${experimentNameValue}' with seed ${seedNumber}`
+      });
+    }
+
+    const transformedRuns = matchingDebates.map(debate => ({
+      _id: debate.id,
+      status: debate.status,
+      performance_data: debate.performanceData,
+      result_data: debate.resultData,
+      wandb_metadata: debate.wandbMetadata,
+      seed: debate.seed,
+      dataset_name: debate.datasetName,
+      processedAt: debate.processedAt
+    }));
+
+    return res.json({
+      success: true,
+      experiment_name: experimentNameValue,
+      seed: seedNumber,
+      runs: transformedRuns.sort((a, b) => 
+        new Date(b.processedAt).getTime() - new Date(a.processedAt).getTime()
+      )
+    });
+    
+  } catch (error) {
+    logger.error('Get single debate error:', error);
     return res.status(500).json({
       success: false,
       message: 'Internal server error',
@@ -310,113 +435,6 @@ export const getDebateRun = async (req: Request, res: Response): Promise<Respons
   }
 };
 
-export const getSingleDebate = async (req: Request, res: Response): Promise<Response> => {
-  try {
-    const { experimentName, seed } = req.query;   
-    logger.info(`Attempt to retrieve all runs from experiment: ${experimentName} with seed: ${seed}`);
-    
-    if (!experimentName) {
-      return res.status(400).json({
-        success: false,
-        errors: { experimentName: ['Experiment name is required'] }
-      });
-    }
-
-    if (!seed) {
-      return res.status(400).json({
-        success: false,
-        errors: { seed: ['Seed is required'] }
-      });
-    }
-    
-    const experimentNameValue = Array.isArray(experimentName) ? experimentName[0] : experimentName;
-    const seedValue = Array.isArray(seed) ? seed[0] : seed;
-    const seedNumber = Number(seedValue);
-    
-    if (isNaN(seedNumber)) {
-      return res.status(400).json({
-        success: false,
-        errors: { seed: ['Seed must be a valid number'] }
-      });
-    }
-
-    let matchingDebates = await prisma.debate.findMany({
-      where: {
-        AND: [
-          {
-            wandbMetadata: {
-              not: null
-            }
-          },
-          {
-            seed: seedNumber
-          }
-        ]
-      },
-      include: {
-        llmConfigs: {
-          select: {
-            id: true,
-            modelName: true,
-            model: true,
-            apiBase: true,
-            timeout: true,
-            numRetries: true,
-            rpm: true,
-            topP: true,
-            maxTokens: true,
-            temperature: true
-          }
-        }
-      },
-      orderBy: {
-        processedAt: 'desc'
-      }
-    });
-
-    matchingDebates = matchingDebates.filter(debate => {
-      const debateExperimentName = 
-        (debate.wandbMetadata as any)?.parsed_args?.["experiment.name"] ||
-        debate.llmConfigs.map(c => c.modelName).sort().join('_vs_');
-      return debateExperimentName === experimentNameValue;
-    });
-
-    if (matchingDebates.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: `No runs found for experiment '${experimentNameValue}' with seed ${seedNumber}`
-      });
-    }
-
-    const transformedRuns = matchingDebates.map(debate => ({
-      _id: debate.id,
-      status: debate.status,
-      performance_data: debate.performanceData,
-      result_data: debate.resultData,
-      wandb_metadata: debate.wandbMetadata,
-      seed: debate.seed,
-      dataset_name: debate.datasetName,
-      processedAt: debate.processedAt
-    }));
-
-    return res.json({
-      success: true,
-      experiment_name: experimentNameValue,
-      seed: seedNumber,
-      runs: transformedRuns.sort((a, b) => 
-        new Date(b.processedAt).getTime() - new Date(a.processedAt).getTime()
-      )
-    });
-    
-  } catch (error) {
-    logger.error('Get single debate error:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Internal server error',
-      error: error instanceof Error ? error.message : 'Unknown error'
-    });
-  }
-};
 
 export const debugDatabase = async (req: Request, res: Response): Promise<Response> => {
   try {

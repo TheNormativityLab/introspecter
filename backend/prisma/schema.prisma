@@ -27,7 +27,7 @@ model LlmConfig {
 
 model Debate {
   id              Int         @id @default(autoincrement())
-  experimentId      String?     @unique
+  experimentId    String?  
   seed            Int?
   datasetName     String?     @map("dataset_name")
   status          String      @default("completed")

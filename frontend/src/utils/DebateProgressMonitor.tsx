@@ -235,7 +235,7 @@ const DebateProgressMonitor: React.FC<DebateProgressProps> = ({ debateData, onBa
       if (result.resultData) {
         setResults(result.resultData);
       } else {
-        setLogs(prev => [...prev, 'Experiment completed. Saving results to database (this may take some time). Check the dashboard shortly to view."']);
+        setLogs(prev => [...prev, 'Experiment completed. Saving results to database (this may take some time). Check the dashboard shortly to view.']);
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';

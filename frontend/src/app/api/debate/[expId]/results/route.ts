@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { expId: string } }
+  context: { params: Promise<{ expId: string }> }
 ) {
-  const { expId } = params;
-  
+  const { expId } = await context.params;
+
   try {
     if (!process.env.BACKEND_URL) {
       return NextResponse.json(
@@ -32,8 +32,7 @@ export async function GET(
         } else {
           errorMessage = await backendResponse.text();
         }
-      } catch {
-      }
+      } catch {}
 
       console.error("Backend error:", errorMessage);
       return NextResponse.json(

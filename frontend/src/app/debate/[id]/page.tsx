@@ -81,24 +81,50 @@ export default function DebateDetailsPage() {
   };
 
   const findIncorrectSwitches = () => {
-    if (!currentRun?.result_data) return [];
+    if (!currentRun?.result_data) {
+      console.log('No result data available for incorrect switches analysis');
+      return [];
+    }
     
     const switches: IncorrectSwitchQuestion[] = [];
-    const taskName = inferDatasetFromTask(currentRun?.dataset_name) as TaskName;
+    
+    // For multi-run experiments, use the dataset_name directly
+    // For single-run experiments, infer from task
+    const taskName = inferDatasetFromTask(
+      currentRun?.wandb_metadata?.parsed_args?.task, 
+      currentRun?.dataset_name
+    ) as TaskName;
+    
+    console.log('Analysis - Using taskName:', taskName, 'for dataset:', currentRun?.dataset_name);
+    
+    if (!['mmlu', 'gsm8k', 'commonsense_qa', 'math'].includes(taskName)) {
+      console.warn('Unknown task name for analysis:', taskName);
+      return [];
+    }
     
     currentRun.result_data.forEach((questionData, questionIndex) => {
       const rounds = questionData.debate_session?.rounds || [];
       if (rounds.length < 2) return;
       
-      Object.keys(rounds[0].responses || {}).forEach(agentName => {
+      // Get all agent names from the first round
+      const agentNames = Object.keys(rounds[0].responses || {});
+      
+      agentNames.forEach(agentName => {
         const agentEvaluations: boolean[] = [];
         
-        rounds.forEach(round => {
+        // Evaluate each round for this agent
+        rounds.forEach((round, roundIndex) => {
           const response = round.responses[agentName] || '';
-          const evaluation = evaluateResponse(response, questionData.correct_answer, taskName);
-          agentEvaluations.push(evaluation.isCorrect);
+          try {
+            const evaluation = evaluateResponse(response, questionData.correct_answer, taskName);
+            agentEvaluations.push(evaluation.isCorrect);
+          } catch (error) {
+            console.error(`Error evaluating response for agent ${agentName}, round ${roundIndex}:`, error);
+            agentEvaluations.push(false); // Default to incorrect if evaluation fails
+          }
         });
         
+        // Find switches from correct to incorrect
         for (let i = 1; i < agentEvaluations.length; i++) {
           const prevCorrect = agentEvaluations[i - 1];
           const currentCorrect = agentEvaluations[i];
@@ -115,6 +141,7 @@ export default function DebateDetailsPage() {
       });
     });
     
+    console.log('Found incorrect switches:', switches.length);
     return switches;
   };
 
@@ -206,7 +233,16 @@ export default function DebateDetailsPage() {
     setSelectedRound(0);
   }, [selectedRun]);
 
-  const inferDatasetFromTask = (task: string): string => {
+  const inferDatasetFromTask = (task: string, fallbackDatasetName?: string): string => {
+    // First try the fallback dataset name (from multi-run structure)
+    if (fallbackDatasetName) {
+      const normalized = fallbackDatasetName.toLowerCase().trim();
+      if (['mmlu', 'gsm8k', 'commonsense_qa', 'math'].includes(normalized)) {
+        return normalized;
+      }
+    }
+    
+    // Then try parsing from task string (single-run structure)
     if (!task) return 'unknown';
     const lowerTask = (task ?? '').toString().toLowerCase();
     if (lowerTask.includes('mmlu')) return 'mmlu';
@@ -221,19 +257,29 @@ export default function DebateDetailsPage() {
     
     const datasets = new Set<string>();
 
-    // Collect from result_data
+    // For multi-run experiments, the dataset should be consistent across all questions in a run
+    if (currentRun.dataset_name) {
+      const normalized = currentRun.dataset_name.toLowerCase().trim();
+      if (['mmlu', 'gsm8k', 'commonsense_qa', 'math'].includes(normalized)) {
+        datasets.add(normalized);
+      }
+    }
+
+    // Also collect from individual question data as backup
     currentRun.result_data.forEach(question => {
       if (question.dataset) {
-        datasets.add(question.dataset.trim().toLowerCase());
+        const normalized = question.dataset.trim().toLowerCase();
+        if (['mmlu', 'gsm8k', 'commonsense_qa', 'math'].includes(normalized)) {
+          datasets.add(normalized);
+        }
       }
     });
 
-    // Fallback: from wandb_metadata parsed_args
     if (datasets.size === 0) {
       const task = currentRun.wandb_metadata?.parsed_args?.task;
       if (task) {
         const taskDatasets = Array.isArray(task)
-          ? task.map(t => t.trim().toLowerCase())
+          ? task.map(t => t.toString().trim().toLowerCase())
           : task.toString().split(',').map(t => t.trim().toLowerCase());
         
         taskDatasets.forEach(dataset => {
@@ -247,6 +293,55 @@ export default function DebateDetailsPage() {
     return Array.from(datasets).sort();
   };
 
+  useEffect(() => {
+  if (currentRun) {
+    console.log('Recalculating incorrect switches for run:', {
+      datasetName: currentRun.dataset_name,
+      taskFromWandb: currentRun.wandb_metadata?.parsed_args?.task,
+      hasResultData: !!currentRun.result_data,
+      resultDataLength: currentRun.result_data?.length
+    });
+    
+    const switches = findIncorrectSwitches();
+    console.log('Calculated switches:', switches);
+    setIncorrectSwitches(switches);
+  }
+}, [currentRun, selectedRun]);
+
+// Add debugging to the filter effect
+useEffect(() => {
+  if (!currentRun?.result_data) return;
+
+  let questions = currentRun.result_data.map((_, index) => index);
+  
+  console.log('Filtering questions:', {
+    activeTab,
+    totalQuestions: questions.length,
+    incorrectSwitchesCount: incorrectSwitches.length,
+    selectedDataset
+  });
+  
+  if (activeTab === 'filter-incorrect') {
+    const switchQuestions = [...new Set(incorrectSwitches.map(s => s.questionIndex))];
+    console.log('Switch questions:', switchQuestions);
+    questions = questions.filter(index => switchQuestions.includes(index));
+    console.log('Filtered to switch questions:', questions.length);
+  } else if (selectedDataset !== 'all') {
+    questions = questions.filter(index => {
+      const questionData = currentRun.result_data[index];
+      const dataset = questionData.dataset || 
+        inferDatasetFromTask(currentRun.wandb_metadata?.parsed_args?.task, currentRun.dataset_name);
+      return dataset === selectedDataset;
+    });
+  }
+
+  console.log('Final filtered questions:', questions.length);
+  setFilteredQuestions(questions);
+  
+  if (questions.length > 0 && !questions.includes(selectedQuestion)) {
+    setSelectedQuestion(questions[0]);
+  }
+}, [currentRun, selectedDataset, activeTab, selectedQuestion, selectedRun, incorrectSwitches]);
 
   const getDatasetDisplayName = (dataset: string): string => {
     const displayNames: { [key: string]: string } = {
@@ -432,9 +527,23 @@ export default function DebateDetailsPage() {
 
   const roundsData = extractRoundData(currentRun.performance_data || []);
 
+  const getParsedArgs = (wandbMetadata: any) => {
+    if (!wandbMetadata?.parsed_args) return {};
+    
+    // If parsed_args is an array (single dataset/seed case), use the first element
+    if (Array.isArray(wandbMetadata.parsed_args)) {
+      return wandbMetadata.parsed_args[0] || {};
+    }
+    
+    // Otherwise it's already an object (multi dataset/seed case)
+    return wandbMetadata.parsed_args;
+  };
+
+  // Then update your existing code to use this helper:
+
   const getAgentNames = () => {
     const agents = [];
-    const parsedArgs = currentRun.wandb_metadata?.parsed_args;
+    const parsedArgs = getParsedArgs(currentRun.wandb_metadata); // Use helper here
     
     if (parsedArgs?.['agent_counts.0'] > 0 && parsedArgs?.['llm_conf@llm1']) {
       const agentName = parsedArgs['llm_conf@llm1'].toLowerCase();
@@ -491,23 +600,27 @@ export default function DebateDetailsPage() {
   const agentMapping = createAgentMapping();
   const availableDatasets = getAvailableDatasets();
   const datasetStats = getDatasetStats();
-  const rawTask = currentRun.wandb_metadata?.parsed_args?.task;
-  const parsedArgs = currentRun.wandb_metadata?.parsed_args as Record<string, any>;
+  const rawTask = getParsedArgs(currentRun.wandb_metadata)?.task; // Use helper here
+  const parsedArgs = getParsedArgs(currentRun.wandb_metadata); // Use helper here
+
   const flatAgentCounts = [0, 1, 2].map(i => parsedArgs[`agent_counts.${i}`] ?? 0);
   const arrayAgentCounts: number[] = Array.isArray(parsedArgs.agent_counts)
     ? parsedArgs.agent_counts
     : [];
   const agentCounts = arrayAgentCounts.length > 0 ? arrayAgentCounts : flatAgentCounts;
   const numAgents = agentCounts.reduce((sum, count) => sum + count, 0);
-  const numRounds = (currentRun.wandb_metadata?.parsed_args?.['experiment.num_rounds'] || 0) + 1;
-  const datasets = rawTask
-  ? (Array.isArray(rawTask)
-      ? rawTask.map(t => t.toString().trim())
-      : rawTask.toString().split(',').map(t => t.trim()))
-  : [];
-  const numQuestions = currentRun.wandb_metadata?.parsed_args?.['experiment.num_questions'] * datasets.length || 0;
-  const experimentName = currentRun.wandb_metadata?.parsed_args?.['experiment.name'] || `Experiment ${currentRun._id?.toString().slice(-6)}`;
-  
+
+  const numRounds = (parsedArgs?.['experiment.num_rounds'] || 0) + 1; // Use helper result here
+
+  const datasets: string[] = rawTask
+    ? (Array.isArray(rawTask)
+        ? (rawTask as unknown[]).map((t: unknown) => String(t).trim())
+        : String(rawTask).split(",").map((t: string) => t.trim()))
+    : [];
+
+  const numQuestions = parsedArgs?.['experiment.num_questions'] * datasets.length || 0; // Use helper result here
+
+  const experimentName = parsedArgs?.['experiment.name'] || `Experiment ${currentRun._id?.toString().slice(-6)}`; 
   const formatDate = (dateString: string) => {
     if (!dateString) return 'Unknown';
     try {

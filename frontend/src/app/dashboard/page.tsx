@@ -3,6 +3,7 @@ import { useRouter } from 'next/navigation';
 import React, { useEffect, useState, useMemo } from 'react';
 import { Button } from '@/components/button/Button';
 import { User, LogOut, Plus, Clock, CheckCircle, Calendar, Filter, Search, X, ChevronDown, Users, MessageSquare, Activity, Brain, TrendingUp, Shuffle} from 'lucide-react';
+import { logger } from '@/utils/logger';
 
 interface Experiment {
   id: string;
@@ -93,101 +94,201 @@ const Dashboard = () => {
       setLoading(false);
     }
   };
+  // Define types for better type safety
+interface ParsedArgs {
+  [key: string]: unknown;
+  'experiment.num_rounds'?: number;
+  'experiment.num_questions'?: number;
+  'agent_counts'?: number[];
+  task?: string;
+}
 
-  const parseAgentsFromExperimentName = (name: string): string[] => {
-    const agents: string[] = [];
-    const nameLower = name.toLowerCase();
+interface RunData {
+  wandb_metadata?: {
+    parsed_args?: ParsedArgs | ParsedArgs[];
+  };
+}
+
+interface ExperimentData {
+  experiment_name?: string;
+  runs?: RunData[];
+  model_config?: {
+    Human?: unknown[];
+  };
+  performance_data?: Array<{
+    majority_vote?: number;
+  }>;
+  is_complete?: boolean;
+  completed_runs?: number;
+  seeds_present?: unknown[];
+  last_updated?: string;
+  created_at?: string;
+}
+
+// Helper function to safely access parsed_args regardless of structure
+const getParsedArgsValue = (
+  parsedArgs: ParsedArgs | ParsedArgs[] | undefined, 
+  key: string, 
+  defaultValue: unknown = null
+): unknown => {
+  // If parsedArgs is an array, get the first element
+  const args = Array.isArray(parsedArgs) ? parsedArgs[0] : parsedArgs;
+  return args?.[key] ?? defaultValue;
+};
+
+// Updated transformExperiment function with dynamic parsed_args handling
+const transformExperiment = (data: ExperimentData): Experiment => {
+  const experimentName = data.experiment_name || 'Unknown Experiment';
+  const agents = parseAgentsFromExperimentName(experimentName);
+  
+  const rawDatasets: string[] = [
+    ...new Set(
+      (data.runs?.map((run: RunData) => {
+        const parsedArgs = run.wandb_metadata?.parsed_args;
+        const task = Array.isArray(parsedArgs) ? parsedArgs[0]?.task : parsedArgs?.task;
+        return task;
+      }) ?? [])
+        .filter((task): task is string => typeof task === 'string')
+    ),
+  ];
+  
+  const datasets = [
+    ...new Set(
+      (Array.isArray(rawDatasets) ? rawDatasets : [rawDatasets])
+        .flatMap(dataset =>
+          dataset.includes(",")
+            ? dataset.split(",").map(d => d.trim())
+            : [dataset.trim()]
+        )
+    ),
+  ];
+  
+  const hasHuman = Boolean(data.model_config?.Human?.length);
+  
+  // Get parsed_args - could be array or object
+  const parsedArgsRaw: ParsedArgs | ParsedArgs[] | undefined = data.runs?.[0]?.wandb_metadata?.parsed_args;
+  
+  console.log('Raw parsed_args structure:', parsedArgsRaw);
+  console.log('Is array?', Array.isArray(parsedArgsRaw));
+  
+  // Use helper function to get values
+  const numRounds = (getParsedArgsValue(parsedArgsRaw, 'experiment.num_rounds', 0) as number) + 1;
+  const questionsPerDataset = getParsedArgsValue(parsedArgsRaw, 'experiment.num_questions', 100) as number;
+  
+  // Handle agent_counts - this might also be structured differently
+  let agentCounts: number[] = [0, 0, 0];
+  const parsedArgs: ParsedArgs | undefined = Array.isArray(parsedArgsRaw) ? parsedArgsRaw[0] : parsedArgsRaw;
+  
+  if (Array.isArray(parsedArgs?.['agent_counts'])) {
+    const agentCountsArray = parsedArgs['agent_counts'] as unknown[];
+    agentCounts = agentCountsArray.map((count: unknown) => Number(count));
+  } else {
+    // Handle dot notation agent counts
+    const agentCountObj: Record<number, number> = {};
+    Object.keys(parsedArgs || {}).forEach((key: string) => {
+      const match = key.match(/^agent_counts\.(\d+)$/);
+      if (match && parsedArgs) {
+        const index = parseInt(match[1], 10);
+        agentCountObj[index] = Number(parsedArgs[key]);
+      }
+    });
     
-    if (nameLower.includes('gpt')) agents.push('gpt-4o-mini');
-    if (nameLower.includes('mistral')) agents.push('mistral-7b');
-    if (nameLower.includes('meta') || nameLower.includes('llama')) agents.push('llama-3.1-8b-chat');
-    if (nameLower.includes('human')) agents.push('human');
-    
-    const matches = nameLower.match(/(\d+)(gpt|mistral|meta)/g);
-    if (matches) {
-      matches.forEach(match => {
-        const num = parseInt(match.match(/\d+/)?.[0] || '1');
-        const type = match.match(/(gpt|mistral|meta)/)?.[1];
+    const indices = Object.keys(agentCountObj).map(Number);
+    const maxIndex = indices.length > 0 ? Math.max(...indices) : -1;
+    if (maxIndex >= 0) {
+      agentCounts = Array.from({ length: maxIndex + 1 }, (_, i) => agentCountObj[i] || 0);
+    }
+  }
+  
+  const numAgents = agentCounts.reduce((sum, count) => sum + count, 0) + (hasHuman ? 1 : 0);
+  const numQuestions = questionsPerDataset * datasets.length;
+  
+  console.log('Extracted values:', {
+    numRounds,
+    questionsPerDataset,
+    numQuestions,
+    agentCounts,
+    numAgents
+  });
+  
+  const lastRoundPerformance = data.performance_data?.[data.performance_data.length - 1] || {};
+  const majorityVote = lastRoundPerformance.majority_vote || 0;
+  const isComplete = Boolean(data.is_complete);
+  const completedRuns = data.completed_runs || 0;
+  const availableSeeds: string[] = data.seeds_present
+    ? data.seeds_present.map((s: unknown) => String(s))
+    : ['0'];
+  
+  return {
+    id: experimentName,
+    name: experimentName,
+    datasets,
+    agents,
+    status: isComplete ? 'completed' : 'in-progress',
+    endDate: formatDate(data.last_updated),
+    startDate: formatDate(data.created_at),
+    numAgents,
+    numRounds,
+    numQuestions,
+    hasHuman,
+    availableSeeds,
+    selectedSeed: availableSeeds[0] || '0',
+    performance: {
+      majority_vote: majorityVote,
+      rounds_completed: completedRuns,
+    },
+    rawData: data,
+  };
+};
+
+// Helper function for date formatting (you'll need this too)
+const formatDate = (dateString: string | undefined): string => {
+  if (!dateString) return 'Unknown';
+  try {
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-US', { 
+      month: 'short', 
+      day: 'numeric', 
+      year: 'numeric' 
+    });
+  } catch {
+    return 'Unknown';
+  }
+};
+
+// Helper function for parsing agents (you'll need this too)
+const parseAgentsFromExperimentName = (name: string): string[] => {
+  const agents: string[] = [];
+  const nameLower = name.toLowerCase();
+  
+  if (nameLower.includes('gpt')) agents.push('gpt-4o-mini');
+  if (nameLower.includes('mistral')) agents.push('mistral-7b');
+  if (nameLower.includes('meta') || nameLower.includes('llama')) agents.push('llama-3.1-8b-chat');
+  if (nameLower.includes('human')) agents.push('human');
+  
+  const matches = nameLower.match(/(\d+)(gpt|mistral|meta)/g);
+  if (matches) {
+    matches.forEach(match => {
+      const numMatch = match.match(/\d+/);
+      const typeMatch = match.match(/(gpt|mistral|meta)/);
+      
+      if (numMatch && typeMatch) {
+        const num = parseInt(numMatch[0]);
+        const type = typeMatch[1];
         
         for (let i = 0; i < num; i++) {
           if (type === 'gpt' && !agents.includes('gpt-4o-mini')) agents.push('gpt-4o-mini');
           if (type === 'mistral' && !agents.includes('mistral-7b')) agents.push('mistral-7b');
           if (type === 'meta' && !agents.includes('llama-3.1-8b-chat')) agents.push('llama-3.1-8b-chat');
         }
-      });
-    }
-    
-    return agents.length > 0 ? agents : ['gpt-4o-mini'];
-  };
+      }
+    });
+  }
+  
+  return agents.length > 0 ? agents : ['gpt-4o-mini'];
+};
 
-  const parseDatasets = (topicString: string): string[] => {
-    if (!topicString) return ['General Debate'];    
-    if (topicString.includes(',')) {
-      return topicString.split(',').map(dataset => dataset.trim());
-    }    
-    const knownDatasets = ['gsm8k', 'mmlu', 'commonsense_qa'];
-    if (typeof topicString === 'string' && knownDatasets.includes(topicString.toLowerCase())) {
-      return [topicString];
-    }
-    return [topicString || 'General Debate'];
-  };
-
-  const transformExperiment = (data: any): Experiment => {    
-    const experimentName = data.experiment_name || 'Unknown Experiment';
-    const agents = parseAgentsFromExperimentName(experimentName);
-    const datasets = parseDatasets(data.runs?.[0]?.wandb_metadata?.parsed_args?.['task']);
-    
-    const hasHuman = data.model_config?.Human?.length > 0 || false;
-    const numRounds = (data.runs?.[0]?.wandb_metadata?.parsed_args?.['experiment.num_rounds'] + 1);
-    const numAgents = 
-      Number(data.runs?.[0]?.wandb_metadata?.parsed_args?.['agent_counts.0'] || 0) +
-      Number(data.runs?.[0]?.wandb_metadata?.parsed_args?.['agent_counts.1'] || 0) +
-      Number(data.runs?.[0]?.wandb_metadata?.parsed_args?.['agent_counts.2'] || 0) +
-      (hasHuman ? 1 : 0);
-    const numQuestions = data.runs?.[0]?.wandb_metadata?.parsed_args?.['experiment.num_questions'] * datasets.length || 100;
-    const lastRoundPerformance = data.performance_data?.[data.performance_data.length - 1] || {};
-    const majorityVote = lastRoundPerformance.majority_vote || 0;
-    const isComplete = data.is_complete || false;
-    const completedRuns = data.completed_runs || 0;
-    const availableSeeds = data.seeds_present ? data.seeds_present.map(String) : ['0'];
-    
-    return {
-      id: data.experiment_name,
-      name: experimentName,
-      datasets: datasets,
-      agents: agents,
-      status: isComplete ? 'completed' : 'in-progress',
-      endDate: formatDate(data.last_updated),
-      startDate: formatDate(data.created_at),
-      numAgents: numAgents,
-      numRounds: numRounds,
-      numQuestions: numQuestions,
-      hasHuman: hasHuman,
-      availableSeeds: availableSeeds,
-      selectedSeed: availableSeeds[0] || '0',
-      performance: {
-        majority_vote: majorityVote,
-        rounds_completed: completedRuns
-      },
-      rawData: data
-    };
-  };
-
-  const formatDate = (dateString: string): string => {
-    if (!dateString) return 'Unknown';
-    try {
-      const date = new Date(dateString);
-      return date.toLocaleDateString('en-US', { 
-        month: 'short', 
-        day: 'numeric', 
-        year: 'numeric' 
-      });
-    } catch {
-      return 'Unknown';
-    }
-  };
-
-  const handleSeedChange = (experimentId: string, newSeed: string) => {
+ const handleSeedChange = (experimentId: string, newSeed: string) => {
     setExperiments(prev => 
       prev.map(exp => 
         exp.id === experimentId 

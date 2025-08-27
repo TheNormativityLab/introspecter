@@ -41,8 +41,8 @@ export default function NewDebatePage() {
 
   const availableModels = [
     'gpt-4o-mini',
-    'llama-3.1-8b-chat',
-    'mistral-7b',
+    'llama_3_1_8B',
+    'mistral_7B',
     'human-participant'
   ];
   
@@ -146,7 +146,7 @@ export default function NewDebatePage() {
   const getEnabledAgents = () => formData.agents.filter(agent => agent.enabled);
 
   const getTotalQuestions = () => {
-    const datasetQuestions = formData.selectedDatasets.filter(d => d !== 'custom').length * formData.numQuestions;
+    const datasetQuestions = formData.numQuestions;
     const customQuestions = formData.customQuestions.filter(q => q.trim() !== '').length;
     return datasetQuestions + customQuestions;
   };
@@ -525,7 +525,7 @@ export default function NewDebatePage() {
                   <h4 className="font-medium text-gray-700 mb-2">Basic Settings</h4>
                   <ul className="space-y-1 text-sm text-gray-600">
                     <li><strong>Name:</strong> {formData.experimentName || 'Not set'}</li>
-                    <li><strong>Total Questions:</strong> {getTotalQuestions()}</li>
+                    <strong>Questions:</strong> {getTotalQuestions()} (applied to each dataset)
                     <li><strong>Rounds:</strong> {formData.numRounds}</li>
                     {formData.seeds.length > 0 && (
                       <li><strong>Seeds:</strong> {formData.seeds.join(', ')}</li>
