@@ -7,11 +7,12 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   icon?: Icon;
   key?: string | number;
   iconPosition?: 'start' | 'end';
-  iconColor?: 'red' | 'green' | 'grey' | 'blue' | 'purple' | 'white';
+  iconColor?: 'red' | 'green' | 'grey' | 'blue' | 'purple' | 'white' | 'black';
   iconFill?: boolean;
-  buttonStyle?: 'regular' | 'action' | 'alert' | 'flush' | 'primary' | 'secondary';
+  buttonStyle?: 'regular' | 'action' | 'alert' | 'flush' | 'primary' | 'secondary' | 'red' | 'black';
   size?: 'sm' | 'md' | 'lg';
   variant?: 'solid' | 'outline' | 'ghost';
+  color?: 'red' | 'green' | 'blue' | 'purple' | 'orange' | 'yellow' | 'gray' | 'black' | 'white';
 }
 
 export function Button({
@@ -23,6 +24,7 @@ export function Button({
   buttonStyle = 'regular',
   size = 'md',
   variant = 'solid',
+  color = void 0,
   children,
   className = '',
   ...rest
@@ -40,16 +42,21 @@ export function Button({
     classList.push(`icon-fill`);
   }
   
-  classList.push(`button-style-${buttonStyle}`);
-  
   classList.push(`button-size-${size}`);
   
   classList.push(`button-variant-${variant}`);
   
+  classList.push(`button-style-${buttonStyle}`);
+  
+  // Add color class specifically for solid variants (put after buttonStyle for higher specificity)
+  if (color && variant === 'solid') {
+    classList.push(`button-color-${color}`);
+  }
+  
   if (className) {
     classList.push(className);
   }
-
+  
   const content = children || label;
   
   return (

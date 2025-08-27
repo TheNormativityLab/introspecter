@@ -1,10 +1,12 @@
 "use client";
 import React, { useState, useEffect, useRef } from 'react';
+import { Button } from '@/components/button/Button';
 import { 
   Play, Square, AlertCircle, CheckCircle, Clock, ArrowLeft, 
   Brain, User, RefreshCw, Download, Terminal, Activity 
 } from 'lucide-react';
-import { logger } from './logger';
+import { logger } from '../../utils/logger';
+import './DebateProgressMonitor.scss';
 
 interface Agent {
   id: string;
@@ -284,15 +286,15 @@ const DebateProgressMonitor: React.FC<DebateProgressProps> = ({ debateData, onBa
   const getStatusIcon = () => {
     switch (status) {
       case 'starting':
-        return <Clock className="w-5 h-5 text-blue-500 animate-pulse" />;
+        return <Clock className="status-icon status-icon-starting" />;
       case 'running':
-        return <Activity className="w-5 h-5 text-blue-500 animate-pulse" />;
+        return <Activity className="status-icon status-icon-running" />;
       case 'completed':
-        return <CheckCircle className="w-5 h-5 text-green-500" />;
+        return <CheckCircle className="status-icon status-icon-completed" />;
       case 'error':
-        return <AlertCircle className="w-5 h-5 text-red-500" />;
+        return <AlertCircle className="status-icon status-icon-error" />;
       default:
-        return <Clock className="w-5 h-5 text-gray-500" />;
+        return <Clock className="status-icon status-icon-idle" />;
     }
   };
 
@@ -316,79 +318,110 @@ const DebateProgressMonitor: React.FC<DebateProgressProps> = ({ debateData, onBa
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="bg-white shadow-sm border-b border-gray-200">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <button
+    <div className="debate-progress-container">
+      <div className="header">
+        <div className="header-content">
+          <div 
             onClick={onBack}
-            className="flex items-center text-gray-600 hover:text-gray-900 transition-colors cursor-pointer font-medium mb-4"
+            className="back-button"
           >
             <ArrowLeft className="w-5 h-5 mr-2" />
             Back to Form
-          </button>
-          <div className="flex items-center justify-between">
+          </div>
+          <div className="header-main">
             <div>
-              <h1 className="text-3xl font-bold text-gray-900 mb-2">
+              <h1 className="header-title">
                 Debate Progress: {debateData.experimentName}
               </h1>
-              <p className="text-gray-600">
+              <p className="header-subtitle">
                 Monitoring experiment execution with real-time progress updates
               </p>
             </div>
-            <div className="flex items-center space-x-3">
-              <button
+            <div className="header-controls">
+              <Button
+                buttonStyle="secondary"
+                variant="solid"
+                color='black'
+                icon={Download}
+                iconPosition="start"
+                iconColor="white"
+                size="lg"
                 onClick={downloadLogs}
                 disabled={logs.length === 0}
-                className="flex items-center space-x-2 px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <Download className="w-4 h-4" />
-                <span>Download Logs</span>
-              </button>
-              <button
+                Download Logs
+              </Button>
+              
+              <Button
+                buttonStyle="secondary"
+                variant="solid"
+                color='blue'
+                icon={RefreshCw}
+                iconPosition="start"
+                iconColor="white"
+                size="lg"
                 onClick={restartDebate}
                 disabled={isRunning}
-                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <RefreshCw className="w-4 h-4" />
-                <span>Restart</span>
-              </button>
-              <button
+                Restart
+              </Button>
+
+              <Button
+                buttonStyle="secondary"
+                variant="solid"
+                color='red'
+                icon={Square}
+                iconPosition="start"
+                iconColor="white"
+                size="lg"
                 onClick={stopDebate}
                 disabled={!isRunning}
-                className="flex items-center space-x-2 px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <Square className="w-4 h-4" />
-                <span>Stop</span>
-              </button>
+                Stop
+              </Button> 
             </div>
           </div>
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-        
-        {/* Experiment Info */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <h3 className="text-lg font-semibold mb-4 text-gray-800">Configuration</h3>
-            <div className="space-y-2 text-sm">
-              <div><strong>Questions:</strong> {debateData.totalQuestions}</div>
-              <div><strong>Rounds:</strong> {debateData.numRounds}</div>
-              <div><strong>Datasets:</strong> {debateData.selectedDatasets.join(', ')}</div>
+      <div className="main-content">
+        <div className="cards-grid">
+          {/* Configuration Card */}
+          <div className="card">
+            <h3 className="card-title">
+              <Brain className="w-5 h-5 text-blue-500" />
+              Configuration
+            </h3>
+            <div className="config-grid">
+              <div className="config-item">
+                <span className="config-label">Questions:</span>
+                <span className="config-value">{debateData.totalQuestions}</span>
+              </div>
+              <div className="config-item">
+                <span className="config-label">Rounds:</span>
+                <span className="config-value">{debateData.numRounds}</span>
+              </div>
+              <div className="config-item">
+                <span className="config-label">Datasets:</span>
+                <span className="config-value">{debateData.selectedDatasets.join(', ')}</span>
+              </div>
               {debateData.seeds.length > 0 && (
-                <div><strong>Seeds:</strong> {debateData.seeds.join(', ')}</div>
+                <div className="config-item">
+                  <span className="config-label">Seeds:</span>
+                  <span className="config-value">{debateData.seeds.join(', ')}</span>
+                </div>
               )}
             </div>
             
-            <div className="mt-4 pt-4 border-t border-gray-200">
-              <h4 className="font-semibold text-gray-700 mb-2">Agents ({debateData.agents.length})</h4>
-              <div className="space-y-1">
+            <div className="agents-section">
+              <h4 className="agents-title">Agents ({debateData.agents.length})</h4>
+              <div>
                 {debateData.agents.map(agent => (
-                  <div key={agent.id} className="flex items-center text-sm">
+                  <div key={agent.id} className="agent-item">
                     {agent.model === 'human-participant' ? (
-                      <User className="w-4 h-4 mr-2 text-green-600" />
+                      <User className="w-4 h-4 text-green-600" />
                     ) : (
-                      <Brain className="w-4 h-4 mr-2 text-blue-600" />
+                      <Brain className="w-4 h-4 text-blue-600" />
                     )}
                     <span><strong>{agent.name}:</strong> {agent.model}</span>
                   </div>
@@ -397,28 +430,32 @@ const DebateProgressMonitor: React.FC<DebateProgressProps> = ({ debateData, onBa
             </div>
           </div>
 
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <h3 className="text-lg font-semibold mb-4 text-gray-800">Status</h3>
-            <div className="space-y-4">
-              <div className="flex items-center space-x-3">
+          {/* Status Card */}
+          <div className="card">
+            <h3 className="card-title">
+              <Activity className="w-5 h-5 text-green-500" />
+              Status
+            </h3>
+            <div className="status-section">
+              <div className="status-item">
                 {getStatusIcon()}
-                <div>
-                  <div className="font-medium text-gray-800 capitalize">{status}</div>
+                <div className="status-info">
+                  <div className="status-label">{status}</div>
                   {experimentId && (
-                    <div className="text-sm text-gray-600">ID: {experimentId}</div>
+                    <div className="status-detail">ID: {experimentId}</div>
                   )}
                 </div>
               </div>
               
               <div>
-                <div className="text-sm text-gray-600 mb-2">Current Phase</div>
-                <div className="font-medium text-blue-600">{getPhaseDisplay()}</div>
+                <div className="status-detail" style={{marginBottom: '0.5rem'}}>Current Phase</div>
+                <div className="phase-display">{getPhaseDisplay()}</div>
               </div>
 
               {startTime && (
                 <div>
-                  <div className="text-sm text-gray-600">Duration</div>
-                  <div className="font-medium">
+                  <div className="status-detail" style={{marginBottom: '0.5rem'}}>Duration</div>
+                  <div className="duration-display">
                     {formatDuration(startTime!, endTime ?? undefined)}
                   </div>
                 </div>
@@ -426,22 +463,26 @@ const DebateProgressMonitor: React.FC<DebateProgressProps> = ({ debateData, onBa
             </div>
           </div>
 
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <h3 className="text-lg font-semibold mb-4 text-gray-800">Progress</h3>
-            <div className="space-y-4">
+          {/* Progress Card */}
+          <div className="card">
+            <h3 className="card-title">
+              <Clock className="w-5 h-5 text-purple-500" />
+              Progress
+            </h3>
+            <div className="progress-section">
               <div>
-                <div className="flex justify-between text-sm text-gray-600 mb-2">
+                <div className="progress-header">
                   <span>Overall Progress</span>
-                  <span>{Math.round(progress)}%</span>
+                  <span className="progress-percentage">{Math.round(progress)}%</span>
                 </div>
-                <div className="w-full bg-gray-200 rounded-full h-3">
+                <div className="progress-bar">
                   <div
-                    className={`h-3 rounded-full transition-all duration-300 ${
+                    className={`progress-fill ${
                       status === 'completed' 
-                        ? 'bg-green-500' 
+                        ? 'progress-completed' 
                         : status === 'error' 
-                        ? 'bg-red-500' 
-                        : 'bg-blue-500'
+                        ? 'progress-error' 
+                        : 'progress-running'
                     }`}
                     style={{ width: `${progress}%` }}
                   ></div>
@@ -449,19 +490,21 @@ const DebateProgressMonitor: React.FC<DebateProgressProps> = ({ debateData, onBa
               </div>
 
               {status === 'completed' && (
-                <div className="p-3 bg-green-50 border border-green-200 rounded-md">
-                  <div className="flex items-center">
-                    <CheckCircle className="w-5 h-5 text-green-500 mr-2" />
-                    <span className="text-green-700 font-medium">Experiment Completed!</span>
+                <div className="success-notification">
+                  <div className="success-content">
+                    <div className="success-icon">
+                      <CheckCircle />
+                    </div>
+                    <span className="success-text">Experiment Completed!</span>
                   </div>
                 </div>
               )}
 
               {wsError && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-md">
-                  <div className="flex items-center">
-                    <AlertCircle className="w-5 h-5 text-red-500 mr-2" />
-                    <span className="text-red-700 text-sm">{wsError}</span>
+                <div className="error-notification">
+                  <div className="error-content">
+                    <AlertCircle className="w-5 h-5 error-icon" />
+                    <span className="error-text">{wsError}</span>
                   </div>
                 </div>
               )}
@@ -470,32 +513,30 @@ const DebateProgressMonitor: React.FC<DebateProgressProps> = ({ debateData, onBa
         </div>
 
         {/* Logs Section */}
-        <div className="bg-white rounded-lg shadow-md">
-          <div className="p-6 border-b border-gray-200">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center">
-                <Terminal className="w-5 h-5 text-gray-600 mr-2" />
-                <h3 className="text-lg font-semibold text-gray-800">Execution Logs</h3>
+        <div className="logs-container">
+          <div className="logs-header">
+            <div className="logs-header-content">
+              <div className="logs-title">
+                <Terminal className="w-5 h-5 text-gray-600" />
+                Execution Logs
               </div>
-              <div className="text-sm text-gray-500">
+              <div className="logs-count">
                 {logs.length} entries
               </div>
             </div>
           </div>
-          <div className="p-0">
-            <div className="bg-[#2e3440] text-[#d8dee9] h-96 overflow-y-auto font-mono text-sm">
-              <div className="p-4">
-                {logs.length === 0 ? (
-                  <div className="text-gray-500 italic">No logs yet...</div>
-                ) : (
-                  logs.map((log, index) => (
-                    <div key={index} className="mb-1 leading-relaxed">
-                      {log}
-                    </div>
-                  ))
-                )}
-                <div ref={logsEndRef} />
-              </div>
+          <div className="logs-content">
+            <div className="logs-inner">
+              {logs.length === 0 ? (
+                <div className="logs-empty">No logs yet...</div>
+              ) : (
+                logs.map((log, index) => (
+                  <div key={index} className="log-entry">
+                    {log}
+                  </div>
+                ))
+              )}
+              <div ref={logsEndRef} />
             </div>
           </div>
         </div>

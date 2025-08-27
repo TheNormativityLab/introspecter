@@ -118,25 +118,24 @@
       background: rgba(243, 244, 246, 0.8);
     }
   }
-  
+
   &.button-style-secondary.button-variant-outline {
-  color: #6366f1;
-  background: transparent;
-  border-color: #6366f1;
+    color: #6366f1;
+    background: transparent;
+    border-color: #6366f1;
 
-  &:hover:not([disabled]) {
-    color: #4c1d95;
-    border-color: #4c1d95;
-    background: rgba(99, 102, 241, 0.1);
+    &:hover:not([disabled]) {
+      color: #4c1d95;
+      border-color: #4c1d95;
+      background: rgba(99, 102, 241, 0.1);
+    }
+
+    &:disabled {
+      color: #9ca3af;
+      border-color: #e5e7eb;
+      background-color: #f3f4f6;
+    }
   }
-
-  &:disabled {
-    color: #9ca3af;
-    border-color: #e5e7eb;
-    background-color: #f3f4f6;
-  }
-}
-
 
   // Your existing styles
   &.button-style-action {
@@ -279,5 +278,276 @@
   &:focus-visible {
     outline: 2px solid #3b82f6;
     outline-offset: 2px;
+  }
+}
+
+// FIXED: Color overrides for solid variants - moved outside and made more specific
+[data-component='Button'].button-variant-solid.button-color-red {
+  background: #dc2626 !important;
+  color: white !important;
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.3) !important;
+  
+  &:hover:not([disabled]) {
+    background: #b91c1c !important;
+    box-shadow: 0 4px 16px rgba(220, 38, 38, 0.4) !important;
+    transform: translateY(-1px);
+  }
+  
+  &:active:not([disabled]) {
+    transform: translateY(0);
+  }
+}
+
+[data-component='Button'].button-variant-solid.button-color-green {
+  background: #16a34a !important;
+  color: white !important;
+  box-shadow: 0 2px 8px rgba(22, 163, 74, 0.3) !important;
+  
+  &:hover:not([disabled]) {
+    background: #15803d !important;
+    box-shadow: 0 4px 16px rgba(22, 163, 74, 0.4) !important;
+    transform: translateY(-1px);
+  }
+  
+  &:active:not([disabled]) {
+    transform: translateY(0);
+  }
+}
+
+[data-component='Button'].button-variant-solid.button-color-blue {
+  background: #2563eb !important;
+  color: white !important;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3) !important;
+  
+  &:hover:not([disabled]) {
+    background: #1d4ed8 !important;
+    box-shadow: 0 4px 16px rgba(37, 99, 235, 0.4) !important;
+    transform: translateY(-1px);
+  }
+  
+  &:active:not([disabled]) {
+    transform: translateY(0);
+  }
+}
+
+[data-component='Button'].button-variant-solid.button-color-purple {
+  background: #7c3aed !important;
+  color: white !important;
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.3) !important;
+  
+  &:hover:not([disabled]) {
+    background: #6d28d9 !important;
+    box-shadow: 0 4px 16px rgba(124, 58, 237, 0.4) !important;
+    transform: translateY(-1px);
+  }
+  
+  &:active:not([disabled]) {
+    transform: translateY(0);
+  }
+}
+
+[data-component='Button'].button-variant-solid.button-color-orange {
+  background: #ea580c !important;
+  color: white !important;
+  box-shadow: 0 2px 8px rgba(234, 88, 12, 0.3) !important;
+  
+  &:hover:not([disabled]) {
+    background: #dc2626 !important;
+    box-shadow: 0 4px 16px rgba(234, 88, 12, 0.4) !important;
+    transform: translateY(-1px);
+  }
+  
+  &:active:not([disabled]) {
+    transform: translateY(0);
+  }
+}
+
+[data-component='Button'].button-variant-solid.button-color-yellow {
+  background: #ca8a04 !important;
+  color: white !important;
+  box-shadow: 0 2px 8px rgba(202, 138, 4, 0.3) !important;
+  
+  &:hover:not([disabled]) {
+    background: #a16207 !important;
+    box-shadow: 0 4px 16px rgba(202, 138, 4, 0.4) !important;
+    transform: translateY(-1px);
+  }
+  
+  &:active:not([disabled]) {
+    transform: translateY(0);
+  }
+}
+
+[data-component='Button'].button-variant-solid.button-color-gray {
+  background: #4b5563 !important;
+  color: white !important;
+  box-shadow: 0 2px 8px rgba(75, 85, 99, 0.3) !important;
+  
+  &:hover:not([disabled]) {
+    background: #374151 !important;
+    box-shadow: 0 4px 16px rgba(75, 85, 99, 0.4) !important;
+    transform: translateY(-1px);
+  }
+  
+  &:active:not([disabled]) {
+    transform: translateY(0);
+  }
+}
+
+[data-component='Button'].button-variant-solid.button-color-black {
+  background: #101010 !important;
+  color: white !important;
+  box-shadow: 0 2px 8px rgba(16, 16, 16, 0.3) !important;
+  
+  &:hover:not([disabled]) {
+    background: #404040 !important;
+    box-shadow: 0 4px 16px rgba(16, 16, 16, 0.4) !important;
+    transform: translateY(-1px);
+  }
+  
+  &:active:not([disabled]) {
+    transform: translateY(0);
+  }
+}
+
+[data-component='Button'].button-variant-solid.button-color-white {
+  background: #ffffff !important;
+  color: #101010 !important;
+  border: 1px solid #e5e7eb !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1) !important;
+  
+  &:hover:not([disabled]) {
+    background: #f9fafb !important;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15) !important;
+    transform: translateY(-1px);
+  }
+  
+  &:active:not([disabled]) {
+    transform: translateY(0);
+  }
+}
+
+.success-notification {
+  position: relative;
+  padding: 16px 20px;
+  background: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.2);
+  overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  font-family: 'Roboto Mono', monospace;
+  
+  // Subtle overlay effect like your buttons
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border-radius: inherit;
+    background: linear-gradient(135deg, rgba(255,255,255,0.15), rgba(255,255,255,0));
+    opacity: 1;
+    pointer-events: none;
+  }
+  
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 24px rgba(16, 185, 129, 0.3);
+  }
+  
+  .success-content {
+    display: flex;
+    align-items: center;
+    position: relative;
+    z-index: 1;
+  }
+  
+  .success-icon {
+    display: flex;
+    align-items: center;
+    margin-right: 12px;
+    color: rgba(255, 255, 255, 0.9);
+    transition: transform 0.2s ease;
+    
+    svg {
+      width: 20px;
+      height: 20px;
+    }
+  }
+  
+  &:hover .success-icon {
+    transform: scale(1.1);
+  }
+  
+  .success-text {
+    color: white;
+    font-weight: 500;
+    font-size: 14px;
+    position: relative;
+  }
+  
+  &:hover .success-text {
+    text-shadow: 0 0 8px rgba(255, 255, 255, 0.3);
+  }
+}
+
+// Variants for different states
+.success-notification.variant-subtle {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.3);
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.1);
+  
+  .success-icon {
+    color: #059669;
+  }
+  
+  .success-text {
+    color: #065f46;
+  }
+  
+  &:hover {
+    background: rgba(16, 185, 129, 0.15);
+    box-shadow: 0 4px 16px rgba(16, 185, 129, 0.15);
+  }
+}
+
+.success-notification.variant-outline {
+  background: transparent;
+  border: 2px solid #10b981;
+  
+  .success-icon {
+    color: #10b981;
+  }
+  
+  .success-text {
+    color: #059669;
+  }
+  
+  &:hover {
+    background: rgba(16, 185, 129, 0.05);
+    border-color: #059669;
+  }
+}
+
+// Size variants
+.success-notification.size-sm {
+  padding: 12px 16px;
+  font-size: 12px;
+  
+  .success-icon svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.success-notification.size-lg {
+  padding: 20px 24px;
+  font-size: 16px;
+  
+  .success-icon svg {
+    width: 24px;
+    height: 24px;
   }
 }
