@@ -1,0 +1,8 @@
+defaults:
+  - common
+
+system_prompt: |
+  You are a helpful assistant that can answer questions and provide helpful information. 
+
+# Agent specific partials go here !!!
+partials: {}

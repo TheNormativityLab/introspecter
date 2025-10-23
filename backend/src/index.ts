@@ -17,8 +17,9 @@ const start = async () => {
     console.log(e);
   }
 
-  server.listen(process.env.PORT || 8000, () => {
-    logger.info(`Services running on port ${process.env.PORT || 8000}`);
+  const port = Number(process.env.PORT) || 8000;
+  server.listen(port, '0.0.0.0', () => {
+    logger.info(`Services running on port ${port}`);
   })
 }
 

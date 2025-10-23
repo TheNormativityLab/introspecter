@@ -1,0 +1,310 @@
+services:
+  # -------------------------------
+  # FastAPI Backend (Python)
+  # -------------------------------
+  introspecter-api:
+    container_name: introspecter-api
+    build:
+      context: ${HOST_PROJECT_PATH}/api
+      dockerfile: Dockerfile
+    volumes:
+      - ${HOST_PROJECT_PATH}:/workspace
+      - ${HOST_PROJECT_PATH}/api:/app
+    env_file:
+      - ${HOST_PROJECT_PATH}/.env
+    ports:
+      - "${API_PORT}:3001"
+    environment:
+      - DB_HOST=introspecter-postgres-api
+      - DB_PORT=5432
+      - DB_USER=${INTROSPECTER_API_DB_USER}
+      - DB_PASSWORD=${INTROSPECTER_API_DB_PASSWORD}
+      - DB_NAME=${INTROSPECTER_API_DB_NAME}
+      - DATABASE_URL=postgresql+asyncpg://${INTROSPECTER_API_DB_USER}:${INTROSPECTER_API_DB_PASSWORD}@introspecter-postgres-api:5432/${INTROSPECTER_API_DB_NAME}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - KSCOPE_API_KEY=${KSCOPE_API_KEY}
+      - KSCOPE_API_BASE=${KSCOPE_API_BASE}
+      - RABBITMQ_HOST=introspecter-rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - CELERY_BROKER_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@introspecter-rabbitmq:5672//
+      - CELERY_RESULT_BACKEND=rpc://
+      - PYTHONPATH=/app
+    depends_on:
+      introspecter-postgres-api:
+        condition: service_healthy
+      introspecter-rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - introspecter-network
+
+  # -------------------------------
+  # Backend Service
+  # -------------------------------
+  introspecter-backend:
+    container_name: introspecter-backend
+    build:
+      context: ${HOST_PROJECT_PATH}/backend
+      dockerfile: Dockerfile
+    volumes:
+      - ${HOST_PROJECT_PATH}:/workspace
+      - ${HOST_PROJECT_PATH}/backend:/app
+    env_file:
+      - ${HOST_PROJECT_PATH}/.env
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      PORT: 8000
+      DB_HOST: introspecter-postgres-backend
+      DB_PORT: 5432
+      DB_USER: ${INTROSPECTER_BACKEND_DB_USER}
+      DB_PASSWORD: ${INTROSPECTER_BACKEND_DB_PASSWORD}
+      DB_NAME: ${INTROSPECTER_BACKEND_DB_NAME}
+      DATABASE_URL: postgresql://${INTROSPECTER_BACKEND_DB_USER}:${INTROSPECTER_BACKEND_DB_PASSWORD}@introspecter-postgres-backend:5432/${INTROSPECTER_BACKEND_DB_NAME}
+      FASTAPI_BASE_URL: http://introspecter-api:3001
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      introspecter-postgres-backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - introspecter-network
+
+  # -------------------------------
+  # Frontend (Next.js)
+  # -------------------------------
+  introspecter-frontend:
+    container_name: introspecter-frontend
+    build:
+      context: ${HOST_PROJECT_PATH}/frontend
+      dockerfile: Dockerfile
+    volumes:
+      - ${HOST_PROJECT_PATH}/frontend:/app
+      - /app/node_modules
+    env_file:
+      - ${HOST_PROJECT_PATH}/.env
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      - BACKEND_URL=http://introspecter-backend:8000
+      - NEXT_PUBLIC_API_PORT=${API_PORT:-3001} 
+    restart: unless-stopped
+    networks:
+      - introspecter-network
+    depends_on:
+      introspecter-backend:
+        condition: service_healthy
+      introspecter-api:
+        condition: service_started
+      
+  # -------------------------------
+  # Celery Worker 
+  # -------------------------------
+  introspecter-celery-worker:
+    container_name: introspecter-celery-worker
+    build:
+      context: ${HOST_PROJECT_PATH}/api
+      dockerfile: Dockerfile
+    working_dir: /app
+    command: celery -A src.api.celery_app worker --concurrency=10 --loglevel=info
+    volumes:
+      - ${HOST_PROJECT_PATH}/api:/app
+    env_file:
+      - ${HOST_PROJECT_PATH}/.env
+    environment:
+      - DB_HOST=introspecter-postgres-api
+      - DB_PORT=5432
+      - DB_USER=${INTROSPECTER_API_DB_USER}
+      - DB_PASSWORD=${INTROSPECTER_API_DB_PASSWORD}
+      - DB_NAME=${INTROSPECTER_API_DB_NAME}
+      - DATABASE_URL=postgresql+asyncpg://${INTROSPECTER_API_DB_USER}:${INTROSPECTER_API_DB_PASSWORD}@introspecter-postgres-api:5432/${INTROSPECTER_API_DB_NAME}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - KSCOPE_API_KEY=${KSCOPE_API_KEY}
+      - KSCOPE_API_BASE=${KSCOPE_API_BASE}
+      - RABBITMQ_HOST=introspecter-rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - CELERY_BROKER_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@introspecter-rabbitmq:5672//
+      - CELERY_RESULT_BACKEND=rpc://
+      - PYTHONPATH=/app
+      - C_FORCE_ROOT=true
+    depends_on:
+      introspecter-postgres-api:
+        condition: service_healthy
+      introspecter-rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - introspecter-network
+  # -------------------------------
+  # Celery Beat (Scheduler)
+  # -------------------------------
+  introspecter-celery-beat:
+    container_name: introspecter-celery-beat
+    build:
+      context: ${HOST_PROJECT_PATH}/api
+      dockerfile: Dockerfile
+    working_dir: /app
+    command: celery -A src.api.celery_app beat --loglevel=info
+    volumes:
+      - ${HOST_PROJECT_PATH}/api:/app
+      - celery-beat-data:/app/data
+    env_file:
+      - ${HOST_PROJECT_PATH}/.env
+    environment:
+      - DB_HOST=introspecter-postgres-api
+      - DB_PORT=5432
+      - DB_USER=${INTROSPECTER_API_DB_USER}
+      - DB_PASSWORD=${INTROSPECTER_API_DB_PASSWORD}
+      - DB_NAME=${INTROSPECTER_API_DB_NAME}
+      - DATABASE_URL=postgresql+asyncpg://${INTROSPECTER_API_DB_USER}:${INTROSPECTER_API_DB_PASSWORD}@introspecter-postgres-api:5432/${INTROSPECTER_API_DB_NAME}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - KSCOPE_API_KEY=${KSCOPE_API_KEY}
+      - KSCOPE_API_BASE=${KSCOPE_API_BASE}
+      - RABBITMQ_URL
+      - RABBITMQ_HOST=introspecter-rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - CELERY_BROKER_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@introspecter-rabbitmq:5672//
+      - CELERY_RESULT_BACKEND=rpc://
+      - CELERY_BEAT_SCHEDULE=/app/data/celerybeat-schedule.db
+      - PYTHONPATH=/app
+      - C_FORCE_ROOT=true
+    depends_on:
+      introspecter-postgres-api:
+        condition: service_healthy
+      introspecter-rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - introspecter-network
+  # -------------------------------
+  # Flower (Celery Monitoring)
+  # -------------------------------
+  introspecter-flower:
+    container_name: introspecter-flower
+    build:
+      context: ${HOST_PROJECT_PATH}/api
+      dockerfile: Dockerfile
+    working_dir: /app
+    command: celery -A src.api.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    volumes:
+      - ${HOST_PROJECT_PATH}/api:/app
+    env_file:
+      - ${HOST_PROJECT_PATH}/.env
+    environment:
+      - CELERY_BROKER_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@introspecter-rabbitmq:5672//
+      - CELERY_RESULT_BACKEND=rpc://
+      - PYTHONPATH=/app
+    depends_on:
+      introspecter-rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - introspecter-network
+  # -------------------------------
+  # Postgres for API
+  # -------------------------------
+  introspecter-postgres-api:
+    image: postgres:15
+    container_name: introspecter-postgres-api
+    environment:
+      POSTGRES_USER: ${INTROSPECTER_API_DB_USER}
+      POSTGRES_PASSWORD: ${INTROSPECTER_API_DB_PASSWORD}
+      POSTGRES_DB: ${INTROSPECTER_API_DB_NAME}
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./api/scripts/initdb:/docker-entrypoint-initdb.d
+      - pgdata-api:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${INTROSPECTER_API_DB_USER}", "-d", "${INTROSPECTER_API_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - introspecter-network
+
+  # -------------------------------
+  # Postgres for Backend
+  # -------------------------------
+  introspecter-postgres-backend:
+    image: postgres:15
+    container_name: introspecter-postgres-backend
+    environment:
+      POSTGRES_USER: ${INTROSPECTER_BACKEND_DB_USER}
+      POSTGRES_PASSWORD: ${INTROSPECTER_BACKEND_DB_PASSWORD}
+      POSTGRES_DB: ${INTROSPECTER_BACKEND_DB_NAME}
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata-backend:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${INTROSPECTER_BACKEND_DB_USER}", "-d", "${INTROSPECTER_BACKEND_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - introspecter-network
+  # -------------------------------
+  # RabbitMQ Message Broker
+  # -------------------------------
+  introspecter-rabbitmq:
+    image: rabbitmq:3-management
+    container_name: introspecter-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - introspecter-network
+  # -------------------------------
+  # pgAdmin (Web UI for Postgres)
+  # -------------------------------
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: introspecter-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      introspecter-postgres-api:
+        condition: service_healthy
+    networks:
+      - introspecter-network
+networks:
+  introspecter-network:
+    driver: bridge
+volumes:
+  pgdata-backend:
+  pgdata-api:
+  pgadmin-data:
+  rabbitmq-data:
+  celery-beat-data:

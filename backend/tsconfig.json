@@ -5,9 +5,10 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "outDir": "dist",
-    "lib": ["ES2022","DOM"],
-    "target": "es2022",
+    "lib": ["ES2022", "DOM"],
+    "target": "ES2022",
     "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "sourceMap": true,
     "allowSyntheticDefaultImports": true,
     "baseUrl": "./src",
@@ -19,14 +20,13 @@
     "useDefineForClassFields": true,
     "strictPropertyInitialization": false,
     "noImplicitAny": false,
-    "strictNullChecks":false,
- 
+    "strictNullChecks": false
   },
   "exclude": ["node_modules/", "dist/", "tests/"],
   "include": ["./src"],
   "ts-node": {
-		"esm": true,
-		"experimentalSpecifierResolution": "node",
-		"transpileOnly": true
-	}
+    "esm": true,
+    "experimentalSpecifierResolution": "node",
+    "transpileOnly": true
+  }
 }

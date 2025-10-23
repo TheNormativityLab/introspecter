@@ -8,7 +8,12 @@ interface DebateResult {
   validOptions?: string[];
 }
 
-type TaskName = 'mmlu' | 'math' | 'commonsense_qa' | 'gsm8k';
+type TaskName =
+  | "mmlu"
+  | "math"
+  | "commonsense_qa"
+  | "gsm8k"
+  | "custom_questions";
 
 function solveMathProblems(inputStr: string): string | null {
   const pattern = /\d+\.?\d*/g;
@@ -16,101 +21,116 @@ function solveMathProblems(inputStr: string): string | null {
   return matches ? matches[matches.length - 1] : null;
 }
 
-function parseMmluAnswer(inputStr: string, validOptions?: string[]): string | null {
-  const defaultValidOptions = ['A', 'B', 'C', 'D', 'E'];
+function parseMmluAnswer(
+  inputStr: string,
+  validOptions?: string[]
+): string | null {
+  const defaultValidOptions = ["A", "B", "C", "D", "E"];
   const options = validOptions || defaultValidOptions;
-  
+
   const cleanStr = inputStr.trim();
-  
+
   const patterns = [
     {
-      regex: /(?:answer\s+is\s*|final\s+answer\s*(?:is)?\s*:?\s*|therefore[^.]*?answer[^.]*?is\s*|thus[^.]*?answer[^.]*?is\s*|my\s+(?:updated\s+)?answer\s+is\s*)\(?([A-E])\)?/gi,
+      regex:
+        /(?:answer\s+is\s*|final\s+answer\s*(?:is)?\s*:?\s*|therefore[^.]*?answer[^.]*?is\s*|thus[^.]*?answer[^.]*?is\s*|my\s+(?:updated\s+)?answer\s+is\s*)\(?([A-E])\)?/gi,
       priority: 10,
-      captureGroup: 1
+      captureGroup: 1,
     },
-    
+
     {
       regex: /\(([A-E])\)\s*\.?\s*$/gi,
       priority: 9,
-      captureGroup: 1
+      captureGroup: 1,
     },
-    
+
     {
-      regex: /(?:thus|therefore|hence|so|in conclusion)[^.]*?(?:answer|option|choice)[^.]*?\(?([A-E])\)?(?=.{0,50}$)/gi,
+      regex:
+        /(?:thus|therefore|hence|so|in conclusion)[^.]*?(?:answer|option|choice)[^.]*?\(?([A-E])\)?(?=.{0,50}$)/gi,
       priority: 8,
-      captureGroup: 1
+      captureGroup: 1,
     },
-    
+
     {
-      regex: /(?:the\s+)?(?:correct\s+)?answer\s+is\s+(?:option\s+)?\(?([A-E])\)?/gi,
+      regex:
+        /(?:the\s+)?(?:correct\s+)?answer\s+is\s+(?:option\s+)?\(?([A-E])\)?/gi,
       priority: 7,
-      captureGroup: 1
+      captureGroup: 1,
     },
-    
+
     {
-      regex: /(?:I\s+(?:choose|select|pick)|my\s+choice\s+is)\s+(?:option\s+)?\(?([A-E])\)?/gi,
+      regex:
+        /(?:I\s+(?:choose|select|pick)|my\s+choice\s+is)\s+(?:option\s+)?\(?([A-E])\)?/gi,
       priority: 6,
-      captureGroup: 1
+      captureGroup: 1,
     },
-    
+
     {
       regex: /\b(?:option|choice)\s+([A-E])\b/gi,
       priority: 5,
-      captureGroup: 1
+      captureGroup: 1,
     },
-    
+
     {
       regex: /([A-E])\)\s*[a-z\s]+/gi,
       priority: 4,
-      captureGroup: 1
+      captureGroup: 1,
     },
-    
+
     {
       regex: /\(([A-E])\)/g,
       priority: 3,
-      captureGroup: 1
+      captureGroup: 1,
     },
-    
+
     {
       regex: /\b([A-E])\)/g,
       priority: 2,
-      captureGroup: 1
+      captureGroup: 1,
     },
-    
+
     {
       regex: /\b([A-E])\b/g,
       priority: 1,
-      captureGroup: 1
-    }
+      captureGroup: 1,
+    },
   ];
-  
-  const candidates: Array<{answer: string, priority: number, position: number, context: string}> = [];
-  
+
+  const candidates: Array<{
+    answer: string;
+    priority: number;
+    position: number;
+    context: string;
+  }> = [];
+
   for (const pattern of patterns) {
     const matches = [...cleanStr.matchAll(pattern.regex)];
-    
+
     for (const match of matches) {
       const candidate = match[pattern.captureGroup]?.toUpperCase();
       if (candidate && options.includes(candidate)) {
         const contextStart = Math.max(0, (match.index || 0) - 50);
-        const contextEnd = Math.min(cleanStr.length, (match.index || 0) + match[0].length + 50);
+        const contextEnd = Math.min(
+          cleanStr.length,
+          (match.index || 0) + match[0].length + 50
+        );
         const context = cleanStr.slice(contextStart, contextEnd).toLowerCase();
-        
+
         candidates.push({
           answer: candidate,
           priority: pattern.priority,
           position: match.index || 0,
-          context: context
+          context: context,
         });
       }
     }
   }
-  
+
   if (candidates.length === 0) {
     return null;
   }
-  
-  const filteredCandidates = candidates.filter(candidate => {
+
+  const filteredCandidates = candidates.filter((candidate) => {
     const negativePatterns = [
       /not\s+([A-E])/i,
       /isn't\s+([A-E])/i,
@@ -118,66 +138,82 @@ function parseMmluAnswer(inputStr: string, validOptions?: string[]): string | nu
       /exclude\s+([A-E])/i,
       /eliminate\s+([A-E])/i,
       /wrong.*?([A-E])/i,
-      /incorrect.*?([A-E])/i
+      /incorrect.*?([A-E])/i,
     ];
-    
-    return !negativePatterns.some(pattern => {
+
+    return !negativePatterns.some((pattern) => {
       const match = candidate.context.match(pattern);
       return match && match[1] && match[1].toUpperCase() === candidate.answer;
     });
   });
-  
-  const workingCandidates = filteredCandidates.length > 0 ? filteredCandidates : candidates;
-  
+
+  const workingCandidates =
+    filteredCandidates.length > 0 ? filteredCandidates : candidates;
+
   workingCandidates.sort((a, b) => {
     if (a.priority !== b.priority) {
       return b.priority - a.priority;
     }
     return b.position - a.position;
   });
-  
+
   const lastPortion = cleanStr.slice(-200).toLowerCase();
   const conclusiveWords = [
-    'therefore', 'thus', 'hence', 'so', 'final answer', 'conclusion',
-    'answer is', 'correct answer', 'the answer', 'my answer', 'updated answer'
+    "therefore",
+    "thus",
+    "hence",
+    "so",
+    "final answer",
+    "conclusion",
+    "answer is",
+    "correct answer",
+    "the answer",
+    "my answer",
+    "updated answer",
   ];
-  
-  const finalPortionCandidates = workingCandidates.filter(c => 
-    c.position >= cleanStr.length - 200
+
+  const finalPortionCandidates = workingCandidates.filter(
+    (c) => c.position >= cleanStr.length - 200
   );
-  
+
   if (finalPortionCandidates.length > 0) {
-    const highPriorityFinal = finalPortionCandidates.filter(c => c.priority >= 7);
+    const highPriorityFinal = finalPortionCandidates.filter(
+      (c) => c.priority >= 7
+    );
     if (highPriorityFinal.length > 0) {
       return highPriorityFinal[0].answer;
     }
   }
-  
-  const hasConclusive = conclusiveWords.some(word => lastPortion.includes(word));
+
+  const hasConclusive = conclusiveWords.some((word) =>
+    lastPortion.includes(word)
+  );
   if (hasConclusive && finalPortionCandidates.length > 0) {
     return finalPortionCandidates[0].answer;
   }
-  
-  const highPriorityCandidates = workingCandidates.filter(c => c.priority >= 6);
+
+  const highPriorityCandidates = workingCandidates.filter(
+    (c) => c.priority >= 6
+  );
   if (highPriorityCandidates.length > 0) {
     return highPriorityCandidates[0].answer;
   }
-  
+
   const answerCounts = new Map<string, number>();
   const recentBonus = new Map<string, number>();
   const textLength = cleanStr.length;
-  
-  workingCandidates.forEach(c => {
+
+  workingCandidates.forEach((c) => {
     answerCounts.set(c.answer, (answerCounts.get(c.answer) || 0) + 1);
-    
+
     if (c.position >= textLength * 0.7) {
       recentBonus.set(c.answer, (recentBonus.get(c.answer) || 0) + 0.5);
     }
   });
-  
-  let bestAnswer = '';
+
+  let bestAnswer = "";
   let bestScore = 0;
-  
+
   for (const [answer, count] of answerCounts.entries()) {
     const score = count + (recentBonus.get(answer) || 0);
     if (score > bestScore) {
@@ -185,15 +221,18 @@ function parseMmluAnswer(inputStr: string, validOptions?: string[]): string | nu
       bestAnswer = answer;
     }
   }
-  
+
   if (bestAnswer) {
     return bestAnswer;
   }
-  
+
   return workingCandidates[0]?.answer || null;
 }
 
-function parseCommonsenseQaAnswer(inputStr: string, validOptions?: string[]): string | null {
+function parseCommonsenseQaAnswer(
+  inputStr: string,
+  validOptions?: string[]
+): string | null {
   return parseMmluAnswer(inputStr, validOptions);
 }
 
@@ -203,44 +242,141 @@ function parseMathAnswer(inputStr: string): number | null {
     /(?:final answer|the answer)\s*(?:is|=|:)\s*(-?\d*\.?\d+)/gi,
     /(?:therefore|thus|so)\s*(?:,)?\s*(-?\d*\.?\d+)/gi,
     /=\s*(-?\d*\.?\d+)/g,
-    /(-?\d*\.?\d+)$/g
+    /(-?\d*\.?\d+)$/g,
   ];
-  
+
   for (const pattern of answerPatterns) {
     const matches = [...inputStr.matchAll(pattern)];
     if (matches.length > 0) {
-      const solution = matches[matches.length - 1][1].replace(/[^0-9.-]/g, '');
+      const solution = matches[matches.length - 1][1].replace(/[^0-9.-]/g, "");
       if (solution) {
         return parseFloat(solution);
       }
     }
   }
-  
+
   const pattern = /(-?\d*\.?\d+)/g;
   const matches = [...inputStr.matchAll(pattern)];
-  
+
   for (let i = matches.length - 1; i >= 0; i--) {
-    const solution = matches[i][1].replace(/[^0-9.-]/g, '');
+    const solution = matches[i][1].replace(/[^0-9.-]/g, "");
     if (solution) {
       return parseFloat(solution);
     }
   }
-  
+
   return null;
 }
 
 function parseGsm8kAnswer(inputStr: string): string | null {
+  if (typeof inputStr !== "string") return null;
+
   const bracePattern = /\{([0-9.,$]*)\}/g;
-  const braceMatches = [...inputStr.matchAll(bracePattern)];
-  
-  for (let i = braceMatches.length - 1; i >= 0; i--) {
-    const solution = braceMatches[i][1].replace(/[^0-9.]/g, '');
-    if (solution) {
-      return solution;
+  try {
+    const braceMatches = [...inputStr.matchAll(bracePattern)];
+    for (let i = braceMatches.length - 1; i >= 0; i--) {
+      const solution = braceMatches[i][1].replace(/[^0-9.]/g, "");
+      if (solution) return solution;
+    }
+  } catch (err) {
+    console.warn("GSM8K parse failed:", err);
+  }
+  return solveMathProblems(inputStr);
+}
+
+function parseCustomQuestionsAnswer(
+  inputStr: string,
+  validOptions?: string[]
+): string | null {
+  if (typeof inputStr !== "string") return null;
+
+  const cleanStr = inputStr.trim();
+
+  // If validOptions are provided, treat as multiple choice
+  if (validOptions && validOptions.length > 0) {
+    // Try MMLU-style parsing first
+    const mcAnswer = parseMmluAnswer(cleanStr, validOptions);
+    if (mcAnswer) return mcAnswer;
+
+    // Try to find exact match of valid options in the text
+    for (const option of validOptions) {
+      const lowerOption = option.toLowerCase();
+      // Check if option appears as a complete word near the end
+      const pattern = new RegExp(
+        `\\b${lowerOption.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+        "gi"
+      );
+      const matches = [...cleanStr.matchAll(pattern)];
+      if (matches.length > 0) {
+        // Return the last occurrence
+        return option;
+      }
     }
   }
-  
-  return solveMathProblems(inputStr);
+
+  // Try to extract numbers first (for math questions)
+  const numberPatterns = [
+    /(?:equals|is|=)\s*(-?\d+\.?\d*)/gi,
+    /(?:answer|result|solution)\s*(?:is|:)\s*(-?\d+\.?\d*)/gi,
+    /^(-?\d+\.?\d*)$/g, // Just a number alone
+  ];
+
+  for (const pattern of numberPatterns) {
+    const matches = [...cleanStr.matchAll(pattern)];
+    if (matches.length > 0) {
+      let numAnswer = matches[matches.length - 1][1].trim();
+      // Remove trailing period if it exists
+      if (numAnswer.endsWith(".")) {
+        numAnswer = numAnswer.slice(0, -1);
+      }
+      if (numAnswer) {
+        return numAnswer;
+      }
+    }
+  }
+
+  // For open-ended questions, try to extract the most relevant answer
+  const answerPatterns = [
+    /(?:final\s+answer|the\s+answer|my\s+answer)\s*(?:is|:)\s*["]?([^."]+)["]?/gi,
+    /(?:therefore|thus|hence|so|in conclusion)[^.]*?[:]?\s*["]?([^."]+)["]?(?:\.|$)/gi,
+    /answer:\s*["]?([^."]+)["]?/gi,
+  ];
+
+  for (const pattern of answerPatterns) {
+    const matches = [...cleanStr.matchAll(pattern)];
+    if (matches.length > 0) {
+      let answer = matches[matches.length - 1][1].trim();
+      // Remove trailing period if it exists
+      if (answer.endsWith(".")) {
+        answer = answer.slice(0, -1);
+      }
+      if (answer && answer.length > 0 && answer.length < 200) {
+        return answer;
+      }
+    }
+  }
+
+  // Try to find a standalone number at the end
+  const endNumberMatch = cleanStr.match(/(-?\d+\.?\d*)[.\s]*$/);
+  if (endNumberMatch) {
+    let numAnswer = endNumberMatch[1];
+    // Remove trailing period if it exists
+    if (numAnswer.endsWith(".")) {
+      numAnswer = numAnswer.slice(0, -1);
+    }
+    return numAnswer;
+  }
+
+  // If no pattern matches, try to get the last sentence as the answer
+  const sentences = cleanStr.split(/[.!?]+/).filter((s) => s.trim().length > 0);
+  if (sentences.length > 0) {
+    const lastSentence = sentences[sentences.length - 1].trim();
+    if (lastSentence.length > 0 && lastSentence.length < 200) {
+      return lastSentence;
+    }
+  }
+
+  return null;
 }
 
 function mostFrequent<T>(answers: T[]): T | null {
@@ -252,7 +388,7 @@ function mostFrequent<T>(answers: T[]): T | null {
   let mostFreq = answers[0];
 
   for (const answer of answers) {
-    const currentFrequency = answers.filter(a => a === answer).length;
+    const currentFrequency = answers.filter((a) => a === answer).length;
     if (currentFrequency > counter) {
       counter = currentFrequency;
       mostFreq = answer;
@@ -262,7 +398,11 @@ function mostFrequent<T>(answers: T[]): T | null {
   return mostFreq;
 }
 
-function answerCheck<T>(predictedAnswers: T[], gtAnswer: T, strict: boolean = false): number {
+function answerCheck<T>(
+  predictedAnswers: T[],
+  gtAnswer: T,
+  strict: boolean = false
+): number {
   if (predictedAnswers.length === 0) {
     return 0.0;
   }
@@ -278,15 +418,13 @@ function answerCheck<T>(predictedAnswers: T[], gtAnswer: T, strict: boolean = fa
   return mostFreqAnswer === gtAnswer ? 1.0 : 0.0;
 }
 
-
-
- 
 export {
   solveMathProblems,
   parseMmluAnswer,
   parseCommonsenseQaAnswer,
   parseMathAnswer,
   parseGsm8kAnswer,
+  parseCustomQuestionsAnswer,
   mostFrequent,
   answerCheck,
   type DebateResult,

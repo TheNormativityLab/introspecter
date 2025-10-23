@@ -1,217 +1,276 @@
-# Web
 
-## Installation
+# Introspecter Setup Guide
 
-**Prerequisites:**
-- Node.js (v18 or higher) - [Download from nodejs.org](https://nodejs.org/) | Check your version with `node -v`
-- pnpm package manager - Install with `npm install -g pnpm`
-- PostgreSQL database - [Download from postgresql.org](https://www.postgresql.org/download/)
+This guide will walk you through setting up the Introspecter project. The setup uses Dev Containers to make everything simple and consistent.
 
-### Setting Up PostgreSQL
+## Prerequisites
 
-1. **Install PostgreSQL**
-   - Download and install PostgreSQL from [postgresql.org](https://www.postgresql.org/download/)
-   - During installation, remember the password you set for the PostgreSQL superuser (postgres)
-   - The default port is 5432
+### 1. Docker Desktop
 
-2. **Create a Database**
-   - Open PostgreSQL command line (psql) or use a GUI tool like pgAdmin
-   - Connect as the postgres user
-   - Create a new database for the project:
-   ```sql
-   CREATE DATABASE introspecter;
-   ```
+Docker is required to run the application.
 
-3. **Create a Database User (Optional but Recommended)**
-   - Create a dedicated user for the application:
-   ```sql
-   CREATE USER your_username WITH PASSWORD 'your_password';
-   GRANT ALL PRIVILEGES ON DATABASE introspecter TO your_username;
-   ```
+**Windows:**
 
-4. **Get Your Connection String**
-   - Your database URL will look like: `postgresql://username:password@localhost:5432/introspecter`
-   - If using the default postgres user: `postgresql://postgres:your_password@localhost:5432/introspecter`
-   - If you created a dedicated user: `postgresql://your_username:your_password@localhost:5432/introspecter`
+1.  Visit https://www.docker.com/products/docker-desktop/
+2.  Click "Download for Windows"
+3.  Run the installer (Docker Desktop Installer.exe)
+4.  Follow the installation wizard (keep default settings)
+5.  Restart your computer if prompted
+6.  Launch Docker Desktop from the Start menu
+7.  Accept the terms and conditions
+8.  Docker Desktop may prompt you to install WSL 2 (Windows Subsystem for Linux) - follow the prompts to install it
+9.  Wait for Docker Desktop to start (you'll see a green "Running" status)
 
-### Frontend Setup
+**macOS:**
 
-To install the frontend dependencies:
-```bash
-cd frontend
-pnpm install
+1.  Visit https://www.docker.com/products/docker-desktop/
+2.  Click "Download for Mac" and choose:
+    -   **Apple Silicon** (M1, M2, M3 chips) if you have a newer Mac
+    -   **Intel Chip** if you have an older Mac
+3.  Open the downloaded .dmg file
+4.  Drag Docker.app to your Applications folder
+5.  Open Docker from Applications
+6.  Follow the setup wizard
+7.  You may need to enter your password to grant permissions
+8.  Wait for Docker Desktop to start (you'll see the Docker whale icon in your menu bar)
+
+**Creating a Docker Account:**
+
+-   Docker offers a free tier for personal use
+-   You'll be prompted to create an account when you first launch Docker Desktop
+-   Visit https://hub.docker.com/signup to create an account
+-   Sign in through Docker Desktop
+
+**Verify Installation:**
+
+1.  Open Terminal (macOS) or Command Prompt (Windows)
+2.  Type: `docker --version`
+3.  You should see something like: `Docker version 24.0.6`
+
+### 2. Visual Studio Code (VSCode)
+
+VSCode is the code editor we'll use to work with the project.
+
+**Windows:**
+
+1.  Visit https://code.visualstudio.com/
+2.  Click "Download for Windows"
+3.  Run the installer (VSCodeSetup.exe)
+4.  Follow the installation wizard
+5.  Click Install
+
+**macOS:**
+
+1.  Visit https://code.visualstudio.com/
+2.  Click "Download for Mac"
+3.  Open the downloaded .zip file
+4.  Drag "Visual Studio Code.app" to your Applications folder
+5.  Open VSCode from Applications
+
+**Install Required Extension:**
+
+1.  Open VSCode
+2.  Click the Extensions icon on the left sidebar (or press `Ctrl+Shift+X` on Windows/Linux, `Cmd+Shift+X` on macOS)
+3.  In the search bar, type: `Dev Containers`
+4.  Find "Dev Containers" by Microsoft
+5.  Click the blue "Install" button
+6.  Wait for installation to complete
+
+### 3. Git
+
+Git is needed to download the project code.
+
+**Windows:**
+
+1.  Visit https://git-scm.com/download/win
+2.  Download will start automatically
+3.  Run the installer (Git-2.x.x-64-bit.exe)
+4.  Follow the installation wizard:
+    -   Keep all default settings
+    -   On "Choosing the default editor" page, select your preferred editor (or keep Vim)
+    -   Click Next through all pages
+5.  Click Install
+
+**macOS:**
+
+1.  Open Terminal (from Applications → Utilities)
+2.  Type: `git --version`
+3.  If Git is not installed, macOS will prompt you to install it automatically
+4.  Click "Install" and follow the prompts
+    
+    **Alternative (using Homebrew):**
+    
+    -   If you have Homebrew installed: `brew install git`
+    -   Don't have Homebrew? Visit https://brew.sh/ to install it first
+
+**Verify Installation:**
+
+1.  Open Terminal (macOS) or Command Prompt (Windows)
+2.  Type: `git --version`
+3.  You should see something like: `git version 2.x.x`
+
+## Setup Steps
+
+### Step 1: Clone the Repository
+
+1.  **Open Terminal/Command Prompt:**
+    
+    -   **Windows**: Press `Win+R`, type `cmd`, press Enter
+    -   **macOS**: Press `Cmd+Space`, type "Terminal", press Enter
+2.  **Navigate to where you want the project:**
+    
+    ```bash
+    cd Desktop
+    
+    ```
+    
+3.  **Clone the repository:**
+    
+    ```bash
+    git clone <repository-url>
+    cd introspecter
+    
+    ```
+    
+
+### Step 2: Open in VSCode
+
+1.  **Launch VSCode**
+2.  Click **File → Open Folder** (Windows/Linux) or **File → Open...** (macOS)
+3.  Navigate to and select the `introspecter` folder
+4.  Click **Open**
+
+### Step 3: Configure Environment Variables
+
+1.  **Locate the `.env.example` file** in the left sidebar (file explorer)
+    
+2.  **Right-click** on `.env.example` → **Copy**
+    
+3.  **Right-click** in the empty space below → **Paste**
+    
+4.  **Rename** the copied file to `.env` (remove "copy" and ".example")
+    
+5.  **Open the `.env` file** and update these values:
+    
+    **A. Update the project path:**
+    
+    ```bash
+    HOST_PROJECT_PATH=/full/path/to/introspecter
+    
+    ```
+    
+    **How to find your path:**
+    
+    -   **Windows**: In the introspecter folder, click the address bar and copy the path. Replace backslashes with forward slashes:
+        
+        ```
+        HOST_PROJECT_PATH=C:/Users/YourName/Desktop/introspecter
+        
+        ```
+        
+    -   **macOS**: In Terminal, navigate to the introspecter folder and type `pwd`. Copy the output:
+        
+        ```
+        HOST_PROJECT_PATH=/Users/YourName/Desktop/introspecter
+        
+        ```
+        
+    
+    **B. Add your API keys:**
+    
+    -   **OpenAI API Key:**
+    
+            ```
+            OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxx
+            ```
+            
+    -   **Kaleidoscope API:**
+        
+        ```
+        KSCOPE_API_KEY=your_kscope_key_here
+        KSCOPE_API_BASE=your_kscope_base_url_here
+        ```
+        
+6.  **Save the file** (Ctrl+S or Cmd+S)
+    
+
+### Step 4: Download wandb_metadata Folder
+
+1.  **Download the folder from:** [Link](https://drive.google.com/drive/folders/18xbqaHubmpQxrubngM7jGQF4QK_W6uXF?usp=drive_link)
+2.  **Extract** the folder if it's in a zip file
+3.  **Move the `wandb_metadata` folder** into the `backend` directory
+
+**Final structure should be:**
+
+```
+introspecter/
+├── backend/
+│   └── wandb_metadata/     ← Place here
+├── frontend/
+├── api/
+└── .env
+
 ```
 
-Create a `.env` file in the frontend project root:
-```env
-BACKEND_URL=http://localhost:8000
-```
+### Step 5: Open in Dev Container
 
-### Backend Setup
+The Dev Container will set up everything automatically.
 
-To install the backend dependencies:
-```bash
-cd backend
-pnpm install
-```
+1.  **In VSCode**, you should see a popup in the bottom-right corner saying:
+    
+    > "Folder contains a Dev Container configuration file. Reopen folder to develop in a container"
+    
+    Click **"Reopen in Container"**
+    
+    **If you don't see the popup:**
+    
+    -   Press `F1` (or `Ctrl+Shift+P` on Windows/Linux, `Cmd+Shift+P` on macOS)
+    -   Type: `Dev Containers: Reopen in Container`
+    -   Press Enter
+2.  **Wait for the container to build:**
+    
+    -   This will take 5-15 minutes the first time
+    -   VSCode will show progress in the bottom-right corner
+    -   You'll see: "Starting Dev Container (show log)"
+    -   Click "show log" if you want to see what's happening
+3.  **When complete**, you'll see:
+    
+    -   A green indicator in the bottom-left corner: "Dev Container: Introspecter"
+    -   The terminal will be inside the container
 
-Create a `.env` file in the backend project root:
-```env
-DATABASE_URL=postgresql://username:password@localhost:5432/introspecter
-PORT=8000
-```
+### Step 6: Access the Application
 
-**Important**: Replace the `DATABASE_URL` value with your actual PostgreSQL connection string.
+Once the Dev Container finishes building:
 
-### Database Setup and Population
+ **The application starts automatically!**
+    -   The Dev Container will automatically start all services
+    -   You'll see logs in the VSCode terminal
+    -   Wait about 1-2 minutes for everything to be ready
+-   **Access the application:**
+    -   Open your browser and go to: **[http://localhost:3000](http://localhost:3000)*
+    
+3.  **Wait for services to start:**
+    
+    -   You'll see logs from all services
+    -   Wait until you see messages indicating services are ready
+    -   This takes about 1-2 minutes
+4.  **Access the application:**
+    
+    -   Open your browser and go to: **http://localhost:3000**
 
-To set up the database schema and populate it with initial data:
 
-1. **Build the project (generates Prisma client and pushes schema to database):**
-```bash
-cd backend
-pnpm build
-```
+### Stopping the Application
 
-2. **Populate the database with initial data:**
-```bash
-cd backend
-node src/scripts/db_manager.js --path ../../wandb_data --database-url postgresql://username:password@localhost:5432/introspecter
-```
+#### If running inside a VSCode Dev Container:
 
-Make sure to replace the `--database-url` parameter with your actual PostgreSQL connection string.
-
-## Project Architecture
-
-This is a full-stack web application built with modern JavaScript/TypeScript technologies.
-
-### Technology Stack
-- **Frontend**: Next.js 13+ with App Router, React, TypeScript, Tailwind CSS
-- **Backend**: Node.js with Express.js, TypeScript
-- **Database**: PostgreSQL with Prisma ORM
-- **Database Migration**: Prisma for schema management and database operations
-
-### How It Works
-1. **User Interface**: The Next.js frontend serves web pages and handles user interactions
-2. **API Communication**: Frontend makes HTTP requests to the Express.js backend
-3. **Data Storage**: Backend connects to PostgreSQL database using Prisma ORM to store and retrieve data
-4. **Real-time Features**: Debate data is fetched and displayed dynamically
-
-### Directory Structure
-
-The directory structure below shows the most important parts of the project layout:
-
-```
-project-root/
-├── frontend/                      # Next.js web application
-│   ├── public/                   # Static assets (images, icons)
-│   ├── src/
-│   │   ├── app/                  # Next.js app router pages and API routes
-│   │   │   ├── api/             # API endpoints (user auth, debates)
-│   │   │   ├── dashboard/       # Dashboard page
-│   │   │   ├── debate/[id]/     # Dynamic debate page (shows individual debates)
-│   │   │   ├── layout.tsx       # Root layout component (shared across pages)
-│   │   │   └── page.tsx         # Home page
-│   │   ├── components/          # Reusable UI components
-│   │   │   ├── button/         # Styled button component
-│   │   │   ├── forms/          # Form components (login, registration)
-│   │   │   ├── inputs/         # Input field components
-│   │   │   └── navbar/         # Navigation bar component
-│   │   ├── hooks/              # Custom React hooks
-│   │   ├── lib/                # Utility functions and configurations
-│   │   └── styles/             # Global CSS and Tailwind styles
-│   ├── package.json            # Frontend dependencies and scripts
-│   └── next.config.js          # Next.js configuration
-└── backend/                     # Express.js API server
-    ├── src/
-    │   ├── app.ts              # Express app configuration and middleware setup
-    │   ├── index.ts            # Server entry point (starts the server)
-    │   ├── middleware/         # Custom middleware (authentication, logging, etc.)
-    │   ├── models/             # Database models (data structure definitions)
-    │   │   ├── Debate/        # Debate data model and schema
-    │   │   └── User/          # User data model and schema
-    │   ├── router/             # API route handlers
-    │   │   ├── debates/       # Debate-related endpoints (CRUD operations)
-    │   │   ├── users/         # User-related endpoints (auth, profiles)
-    │   │   └── routes.ts      # Main router configuration
-    │   ├── scripts/            # Database management and utility scripts
-    │   │   ├── db_manager.js  # Database population script
-    │   │   └── wandb_utils.js # Weights & Biases data processing utilities
-    │   └── utils/              # Helper functions and utilities
-    ├── prisma/
-    │   └── schema.prisma       # Database schema definition
-    ├── package.json            # Backend dependencies and scripts
-    └── tsconfig.json           # TypeScript configuration
-```
-
-### Key Components Explained
-
-**Frontend (Next.js)**
-- **App Router**: Modern Next.js routing system using the `app/` directory
-- **Server Components**: Components that run on the server for better performance
-- **Dynamic Routes**: Pages like `debate/[id]` that change based on URL parameters
-- **API Routes**: Backend-like endpoints that run on the Next.js server
-
-**Backend (Express.js)**
-- **RESTful API**: Follows REST principles for predictable API endpoints
-- **Middleware**: Functions that process requests before they reach route handlers
-- **Models**: Define how data is structured and stored in PostgreSQL
-- **Routes**: Handle different HTTP requests (GET, POST, PUT, DELETE)
-- **Prisma ORM**: Type-safe database client and schema management
-
-**Database (PostgreSQL)**
-- **Tables**: Relational database tables (e.g., "debates", "llm_configs")
-- **Records**: Individual rows stored with structured data
-- **Schema**: Defined in Prisma schema file for type safety and migrations
-
-## Running the Application
-
-**Build and Setup the Backend:**
-```bash
-cd backend
-pnpm install
-pnpm build
-```
-
-**Start the Backend Server:**
-```bash
-cd backend
-pnpm run dev
-```
-The API server will run on http://localhost:8000
-
-**Start the Frontend Development Server:**
-```bash
-cd frontend
-pnpm run dev
-```
-The web application will be available at http://localhost:3000. Please create a username and password to login.
-
-## Helpful Resources
-
-- **Next.js Documentation**: [nextjs.org/docs](https://nextjs.org/docs)
-- **Express.js Guide**: [expressjs.com/en/guide](https://expressjs.com/en/guide/routing.html)
-- **PostgreSQL Documentation**: [postgresql.org/docs](https://www.postgresql.org/docs/)
-- **Prisma Documentation**: [prisma.io/docs](https://www.prisma.io/docs/)
-- **TypeScript Handbook**: [typescriptlang.org/docs](https://www.typescriptlang.org/docs/)
-- **React Documentation**: [react.dev](https://react.dev/learn)
-
-## Troubleshooting
-
-**Common Issues:**
-
-1. **PostgreSQL Connection Errors**: 
-   - Ensure PostgreSQL is running on your system
-   - Verify the database URL in your `.env` file is correct
-   - Check that the database `introspecter` exists
-   - Ensure the user has proper permissions
-
-2. **Port Already in Use**: Change the PORT in your backend `.env` file if 8000 is occupied
-
-3. **pnpm Command Not Found**: Install pnpm globally with `npm install -g pnpm`
-
-4. **Node Version Issues**: Use Node.js v18 or higher; consider using nvm to manage versions
-
-5. **Prisma Client Generation Issues**: Run `pnpm build` to regenerate the Prisma client after schema changes
-
-6. **Database Schema Issues**: If you modify the schema, run `pnpm build` to push changes to the database
+1.  Press:
+    
+    -   **Ctrl + Shift + P** (Windows/Linux)
+        
+    -   **Cmd + Shift + P** (macOS)
+        
+2.  Type and select:
+    
+    `Dev Containers: Stop Container` 
+    
+3.  Alternatively, open **Docker Desktop → Containers**, find `introspecter`, and click the **Stop** (■) icon.

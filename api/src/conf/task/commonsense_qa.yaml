@@ -1,0 +1,17 @@
+defaults:
+  - base
+
+name: commonsense_qa
+data_path: "./data/commonsense_qa/train_rand_split.jsonl"
+# data_path: "./data/commonsense_qa_failures/gpt_35_turbo/commonsense_qa_wrong_responses_100.json"
+metrics:
+  - "accuracy"
+
+# Task specific prompts
+partials:
+  discussion_message: |
+    These are the solutions to the problem from other agents: 
+    {AGENT_RESPONSES}
+
+    Using the reasoning from other agents as additional advice, can you give an updated answer? Explain your reasoning. Examine your solution and that of other agents. 
+    Put your answer in the form (X) at the end of your response.

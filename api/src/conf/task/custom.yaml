@@ -1,0 +1,10 @@
+# src/conf/task/custom.yaml
+defaults:
+  - base
+
+dataset:
+  name: custom
+  path: null
+  format: json
+
+description: "Custom question set provided by the user."

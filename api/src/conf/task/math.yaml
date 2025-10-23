@@ -1,0 +1,16 @@
+defaults:
+  - base
+
+name: math
+data_path: null
+metrics:
+  - "accuracy"
+
+# Task specific prompts
+partials:
+  discussion_message: |
+    These are the recent/updated opinions from other agents: 
+    {AGENT_RESPONSES}
+     
+    Use these opinions carefully as additional advice, can you provide an updated answer? Explain your reasoning. Make sure to state your answer at the end of the response.
+    {QUESTION_PROMPT}

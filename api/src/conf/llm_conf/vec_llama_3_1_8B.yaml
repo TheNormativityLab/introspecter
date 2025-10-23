@@ -1,0 +1,20 @@
+language_models:
+  - model_name: "llama-3.1-8b-chat"
+    litellm_params:
+      model: "openai/Meta-Llama-3.1-8B-Instruct"
+      api_base: "${oc.env:KSCOPE_API_BASE}"
+      api_key: "${oc.env:KSCOPE_API_KEY}"
+      timeout: 300
+      num_retries: 5
+  - model_name: "llama-3.1-8b-chat"
+    litellm_params:
+      model: "openai/Meta-Llama-3.1-8B-Instruct"
+      api_base: "http://gpu009:8080/v1"
+      api_key: "EMPTY"
+      timeout: 300
+      num_retries: 5
+
+completion_params:
+  top_p: 0.9
+  max_tokens: 2048
+  # etc etc.

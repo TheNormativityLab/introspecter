@@ -1,6 +1,9 @@
 # Environments
 .env
 .venv
-
+.vscode
+/backend/wandb_data/
+/backend/.prisma_done
 # Node modules
 node_modules
+.pnpm-store

@@ -1,0 +1,30 @@
+defaults:
+  - base
+
+name: gsm8k
+data_path: "./data/GSM8k/gsm8k_test.jsonl"
+
+metrics:
+  - "accuracy"
+
+# Task specific prompts
+partials:
+  discussion_message: |
+    These are the solutions to the problem from other agents: 
+    {AGENT_RESPONSES}
+
+    Using the solutions from other agents as additional information, can you provide your answer to the math problem? 
+    Explain your reasoning.
+    The original math problem is {QUESTION_PROMPT}. Your final answer should be a single numerical number, in the form \\boxed{{answer}}, at the end of your response.
+
+  summarization_message_initial: |
+    You are tasked with summarizing the responses from multiple agents working on a math problem.
+
+    Please read through the following responses and provide a concise summary that captures:
+    1. The main approaches being used
+    2. Key calculations or reasoning steps
+    3. Any areas of agreement or disagreement
+
+  summarization_message_final: |
+
+    Provide your summary now. Keep it concise but ensure all important mathematical reasoning is captured.

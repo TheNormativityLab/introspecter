@@ -1,0 +1,8 @@
+language_models:
+  - model_name: "human-participant"
+    litellm_params:
+      model: "mock/human"
+      api_base: "none"
+      api_key: ""
+
+completion_params: {}

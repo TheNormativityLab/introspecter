@@ -1,0 +1,15 @@
+# check https://docs.litellm.ai/docs/routing for more details on how to configure multiple endpoints
+
+language_models:
+  - model_name: "mistral-7b"
+    litellm_params:
+      model: "together_ai/mistralai/Mistral-7B-Instruct-v0.2" # the actual model endpoint
+      timeout: 300
+      # tpm: 100000
+      rpm: 1000
+      num_retries: 7
+
+completion_params:
+  top_p: 0.9
+  max_tokens: 2048
+  # etc etc.

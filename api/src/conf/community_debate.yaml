@@ -1,0 +1,108 @@
+defaults:
+  - _self_
+  - task: commonsense_qa # mmlu, gsm8k, math, commonsense_qa, ...
+  - agents/debate@bg_prompts: background
+  - agents/debate@nc_prompts: newcomer
+  - norm: smileyface
+  - llm_conf@bg_llm1: gpt_4o_mini
+  - llm_conf@bg_llm2: llama_3_1_8B
+  - llm_conf@bg_llm3: mistral_7B
+  - llm_conf@nc_llm1: gpt_4o_mini
+  - llm_conf@nc_llm2: llama_3_1_8B
+  - llm_conf@nc_llm3: mistral_7B
+  - normative_module_conf: simple_normative_module
+
+reasoning_response_type: "zero_information" # zero_information, full_information, partial_information
+use_normative_module: true
+
+# Experiment configuration
+experiment:
+  num_rounds: 3 # Number of debate rounds via command line
+  num_questions: 10 # specify the num of questions via command line
+  summarize: false
+  processing_mode: concurrent # concurrent, sequential (1 api call at a time)
+  max_concurrent_calls: 10 # the maximum number of concurrent calls to the LLM provider via the API
+
+# Agent counts:
+background_agent_counts: [2, 0, 0]
+newcomer_agent_counts: [1, 0, 0]
+
+# First round when the agents enforce the norm in their responses
+# Setting this to 0 means the norm is enforced before the newcomer sees anything from background agents
+norm_enforcement_first_round: 0
+
+# Agent configuration
+background_agents:
+  - name: "${bg_llm1.language_models.0.model_name}_background_agent"
+    num_agents: ${background_agent_counts.0}
+    prompts:
+      system_prompt: ${bg_prompts.system_prompt}
+      partials: ${bg_prompts.partials}
+      additional_partials: ${task.partials}
+    llm_config: ${bg_llm1}
+    few_shot_num_samples: null
+  - name: "${bg_llm2.language_models.0.model_name}_background_agent"
+    num_agents: ${background_agent_counts.1}
+    prompts:
+      system_prompt: ${bg_prompts.system_prompt}
+      partials: ${bg_prompts.partials}
+      additional_partials: ${task.partials}
+    llm_config: ${bg_llm2}
+    few_shot_num_samples: null
+  - name: "${bg_llm3.language_models.0.model_name}_background_agent"
+    num_agents: ${background_agent_counts.2}
+    prompts:
+      system_prompt: ${bg_prompts.system_prompt}
+      partials: ${bg_prompts.partials}
+      additional_partials: ${task.partials}
+    llm_config: ${bg_llm3}
+    few_shot_num_samples: null
+
+newcomer_agents:
+  - name: "${nc_llm1.language_models.0.model_name}_newcomer_agent"
+    num_agents: ${newcomer_agent_counts.0}
+    prompts:
+      system_prompt: ${nc_prompts.system_prompt}
+      partials: ${nc_prompts.partials}
+      additional_partials: ${task.partials}
+    llm_config: ${nc_llm1}
+    few_shot_num_samples: null
+  - name: "${nc_llm2.language_models.0.model_name}_newcomer_agent"
+    num_agents: ${newcomer_agent_counts.1}
+    prompts:
+      system_prompt: ${nc_prompts.system_prompt}
+      partials: ${nc_prompts.partials}
+      additional_partials: ${task.partials}
+    llm_config: ${nc_llm2}
+    few_shot_num_samples: null
+  - name: "${nc_llm3.language_models.0.model_name}_newcomer_agent"
+    num_agents: ${newcomer_agent_counts.2}
+    prompts:
+      system_prompt: ${nc_prompts.system_prompt}
+      partials: ${nc_prompts.partials}
+      additional_partials: ${task.partials}
+    llm_config: ${nc_llm3}
+    few_shot_num_samples: null
+
+version: 1.0
+logging: INFO
+exp_dir: ${hydra:runtime.output_dir}
+seed: 0
+debug: False
+metric: "accuracy"
+strict: False
+cost_check: True
+results_file_name: "results.csv"
+
+# Wandb configuration
+wandb:
+  project: "community_debate"
+  team: "thenormativitylab"
+  mode: "online"
+
+# Add Hydra-specific configuration
+hydra:
+  run:
+    dir: outputs/community_debate/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job:
+    chdir: True

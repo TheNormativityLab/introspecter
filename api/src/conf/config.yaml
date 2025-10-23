@@ -1,0 +1,41 @@
+# Add Hydra-specific configuration
+hydra:
+  run:
+    dir: outputs/basic_debate/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job:
+    chdir: True
+  # empty sweep config for now
+  # sweep:
+  # Job logging empty
+  # job_logging:
+  #   root:
+  #     level: INFO
+
+defaults:
+  - _self_
+
+version: 1.0
+
+print_prompt_and_response: False
+logging: INFO
+
+# Common Params
+exp_dir: ???
+method: ?? # basic, community, etc
+task: ?? # math, mmlu, etc
+
+# Loading specific params
+seed: 0
+
+# Experiment specific params
+num_agents: 2
+num_rounds: 2
+num_evaluations: 1
+summarize: false
+
+# Agent specific params
+basic_agent:
+background_agent:
+newcomer_agent:
+# llm configurations
+# TODO:

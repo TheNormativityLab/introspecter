@@ -1,0 +1,41 @@
+defaults:
+  - _self_
+  - task: commonsense_qa
+  - llm_conf: gpt_3_5_turbo
+  # - llm_conf: llama_3_1_8B
+  - agents/debate@agent_prompts: basic
+
+# Experiment configuration
+experiment:
+  num_agents: 1
+  num_rounds: 0
+  num_questions: 500
+  summarize: true
+  max_wrong_responses: 100
+
+# Agent configuration
+agent:
+  prompts:
+    system_prompt: ${agent_prompts.system_prompt}
+    partials: ${agent_prompts.partials}
+    additional_partials: ${task.partials}
+  llm_config: ${llm_conf}
+  name: "debate_agent"
+  few_shot_num_samples: null
+
+version: 1.0
+logging: ERROR
+exp_dir: ${hydra:runtime.output_dir}
+seed: 0
+debug: False
+metric: "accuracy"
+strict: False # Set to True if you want strict evaluation
+results_file_name: "results.csv"
+batch_size: 5 # OpenAI -5, Llama - 2
+
+# Add Hydra-specific configuration
+hydra:
+  run:
+    dir: outputs/generate_dataset/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job:
+    chdir: True

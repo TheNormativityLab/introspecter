@@ -1,0 +1,66 @@
+defaults:
+  - _self_
+  - task: ??? # mmlu, gsm8k, math, commonsense_qa, ...
+  - agents/debate@agent_prompts: basic
+  - llm_conf@llm1: vec_llama_3_1_8B
+  - llm_conf@llm2: vec_mistral_7B
+  # - llm_conf@llm2: gpt_3_5_turbo
+
+# Experiment configuration
+experiment:
+  name: ???
+  num_rounds: 2
+  num_questions: ??? # spcify the num of questions via command line
+  summarize: true
+  processing_mode: concurrent # concurrent, sequential (1 api call at a time)
+  max_concurrent_calls: 10 # the maximum number of concurrent calls to the LLM provider via the API
+  log_single_results: False # whether to log individual debate results
+
+# Agent counts:
+agent_counts: [1, 0] # [llm1, llm2, ...]
+
+# Agent type configurations
+agent_types:
+  - name: "${llm1.language_models.0.model_name}_agent" # dynamically use the model name
+    count: ${agent_counts.0} # Number of instances of this agent type
+    prompts:
+      system_prompt: ${agent_prompts.system_prompt}
+      partials: ${agent_prompts.partials}
+      additional_partials: ${task.partials}
+    llm_config: ${llm1} # default config
+  - name: "${llm2.language_models.0.model_name}_agent" # dynamically use the model name
+    count: ${agent_counts.1} # Number of instances of this agent type
+    prompts:
+      system_prompt: ${agent_prompts.system_prompt}
+      partials: ${agent_prompts.partials}
+      additional_partials: ${task.partials}
+    llm_config: ${llm2} # Using GPT-4o-mini config
+
+# Checkpointing configuration
+checkpoint:
+  frequency: 25 # Save checkpoint every 25 questions
+  resume: False # Whether to resume from a checkpoint
+
+version: 1.0
+logging: INFO
+exp_dir: ${hydra:runtime.output_dir}
+seed: 0 # TODO: move this to experiment??
+debug: False
+strict: False
+cost_check: True
+results_file_name: "results.csv"
+
+# Wandb configuration
+wandb:
+  project: "basic_debate"
+  team: "thenormativitylab"
+  mode: "online"
+
+# Add Hydra-specific configuration
+hydra:
+  run:
+    dir: outputs/basic_debate/${experiment.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: outputs/basic_debate/multirun/${experiment.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job:
+    chdir: True
