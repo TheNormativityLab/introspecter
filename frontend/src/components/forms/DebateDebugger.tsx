@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { Button } from "@/components/button/Button";
 import {
   ArrowLeft,
   Play,
@@ -8,6 +9,7 @@ import {
   RefreshCw,
   Search,
 } from "lucide-react";
+import './DebateDebugger.scss';
 
 interface DebateConfig {
   [key: string]: any;
@@ -63,7 +65,7 @@ interface Debate {
   seed: number;
   dataset_name: string;
   status: string;
-  uniqueId: string; // Add a unique identifier
+  uniqueId: string;
 }
 
 interface RoundResponse {
@@ -96,15 +98,26 @@ interface DebateDebuggerProps {
 const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
   const [debates, setDebates] = useState<Debate[]>([]);
   const [selectedDebate, setSelectedDebate] = useState<Debate | null>(null);
-  const [debateDetails, setDebateDetails] = useState<DebateDetails | null>(
-    null
-  );
+  const [debateDetails, setDebateDetails] = useState<DebateDetails | null>(null);
   const [selectedQuestion, setSelectedQuestion] = useState<number | null>(null);
   const [selectedRound, setSelectedRound] = useState<number>(0);
   const [agentToReplace, setAgentToReplace] = useState<number | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState<string>("");
+
+  const filteredDebates = debates.filter(
+    (d) =>
+      d.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      d.uniqueId?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      d.dataset_name?.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const currentQuestion = debateDetails?.questions?.[selectedQuestion ?? 0];
+  const numRounds = currentQuestion?.debate_session?.rounds?.length || 0;
+  const agents = currentQuestion?.debate_session?.rounds?.[0]?.responses
+    ? Object.keys(currentQuestion.debate_session.rounds[0].responses)
+    : [];
 
   useEffect(() => {
     fetchCompletedDebates();
@@ -115,62 +128,55 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
     setError(null);
     try {
       const response = await fetch("/api/all-debates");
-
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
-
       const data = await response.json();
-
       if (!data.success) {
         if (data.errors) {
           const errorMessages = Object.entries(data.errors)
             .map(
               ([field, messages]) =>
-                `${field}: ${
-                  Array.isArray(messages) ? messages.join(", ") : messages
-                }`
+                `${field}: ${Array.isArray(messages) ? messages.join(", ") : messages}`
             )
             .join("; ");
           throw new Error(errorMessages || "Validation error");
         }
         throw new Error(data.message || "Failed to fetch debates");
       }
-
       const allDebates: Debate[] = [];
-
       if (data.experiment_groups && Array.isArray(data.experiment_groups)) {
         data.experiment_groups.forEach((experimentGroup: ExperimentGroup) => {
           if (experimentGroup.runs && Array.isArray(experimentGroup.runs)) {
             experimentGroup.runs.forEach((run: DebateRun) => {
-              // Create a unique ID for debates without debate_id
-              const uniqueId = run.debate_id
-                ? `debate-${run.debate_id}`
-                : `exp-${experimentGroup.experiment_name}-seed-${run.seed}`;
-
-              allDebates.push({
-                debate_id: run.debate_id,
-                experiment_name: experimentGroup.experiment_name,
-                name: `${experimentGroup.experiment_name} (Seed ${run.seed})`,
-                created_at: run.processed_at,
-                config: {
+              if (run.status === "completed") {
+                const uniqueId = run.debate_id
+                  ? `debate-${run.debate_id}`
+                  : `exp-${experimentGroup.experiment_name}-seed-${run.seed}`;
+                allDebates.push({
+                  debate_id: run.debate_id,
                   experiment_name: experimentGroup.experiment_name,
-                  model_config: experimentGroup.model_config,
-                  dataset_name: run.dataset_name,
+                  name: `${experimentGroup.experiment_name} (Seed ${run.seed})`,
+                  created_at: run.processed_at,
+                  config: {
+                    experiment_name: experimentGroup.experiment_name,
+                    task: run.dataset_name,
+                    seed: run.seed,
+                    num_agents: experimentGroup.model_config.LLM.length,
+                    llm_conf: experimentGroup.model_config.LLM,
+                    wandb_metadata: run.wandb_metadata,
+                  },
                   seed: run.seed,
-                },
-                seed: run.seed,
-                dataset_name: run.dataset_name,
-                status: run.status,
-                uniqueId: uniqueId,
-              });
+                  dataset_name: run.dataset_name,
+                  status: run.status,
+                  uniqueId: uniqueId,
+                });
+              }
             });
           }
         });
       }
-
       setDebates(allDebates);
-
       if (allDebates.length === 0) {
         setError("No completed debates found. Run some debates first.");
       }
@@ -190,7 +196,6 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
     try {
       let debateData = null;
 
-      // Try debate_id approach first if available
       if (debate.debate_id) {
         try {
           const runResponse = await fetch(
@@ -223,7 +228,6 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
         }
       }
 
-      // Fall back to experiment name + seed approach
       if (!debateData && debate.experiment_name) {
         try {
           const experimentName = debate.experiment_name;
@@ -315,6 +319,7 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
     if (
       !selectedDebate ||
       selectedQuestion === null ||
+      selectedRound === null ||
       agentToReplace === null ||
       !debateDetails
     ) {
@@ -322,36 +327,56 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
       return;
     }
 
-    // Check if debate has a debate_id (required for replay)
-    if (!selectedDebate.debate_id) {
-      setError(
-        "This debate cannot be replayed because it doesn't have a debate_id. " +
-          "Only debates created through the system with stored IDs can be replayed."
-      );
-      return;
-    }
-
     setLoading(true);
     setError(null);
     try {
       const questionData = debateDetails.questions[selectedQuestion];
+      const selectedAgentName = agents[agentToReplace]
+        .replace(/_agent_\d+$/, "")
+        .replace(/-chat/, "")
+        .replace(/^human$/, "human-participant");
+      const agent_counts: Record<string, number> = agents.reduce(
+        (acc: Record<string, number>, agent: string) => {
+          const cleanAgentName = agent.replace(/_agent_\d+$/, "");
+          acc[cleanAgentName] = (acc[cleanAgentName] || 0) + 1;
+          return acc;
+        },
+        {}
+      );
+
+      if ("human" in agent_counts) {
+        agent_counts["human-participant"] = agent_counts["human"];
+        delete agent_counts["human"];
+      }
+      console.log("Agent counts:", agent_counts);
+      const previousRounds = questionData.debate_session.rounds
+        .slice(0, selectedRound)
+        .map((round) => {
+          const filteredResponses = { ...round.responses };
+          delete filteredResponses[selectedAgentName];
+          return {
+            ...round,
+            responses: filteredResponses,
+          };
+        });
       const payload = {
         original_debate_id: selectedDebate.debate_id,
         question_index: selectedQuestion,
         start_from_round: selectedRound,
-        replace_agent_index: agentToReplace,
+        replace_agent_name: selectedAgentName.replace(/_agent_\d+$/, ""),
         question_data: {
           question_text: questionData.question,
           question_prompt: questionData.question_prompt,
           correct_answer: questionData.correct_answer,
         },
-        previous_rounds: questionData.debate_session.rounds.slice(
-          0,
-          selectedRound
-        ),
-        original_config: selectedDebate.config,
+        previous_rounds: previousRounds,
+        original_config: {
+          ...selectedDebate.config,
+          num_rounds: numRounds,
+          agent_counts: agent_counts,
+        },
       };
-
+      console.log("Replay payload:", payload);
       const response = await fetch("/api/debate/replay", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -361,9 +386,23 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
       const result = await response.json();
 
       if (result.success) {
-        alert(`Replay started! Debate ID: ${result.debate_id}`);
         if (onReplayStarted) {
-          onReplayStarted(result);
+          const replayInfo = {
+            success: true,
+            debate_id: result.debate_id,
+            experiment_name: selectedDebate.experiment_name || selectedDebate.name || "Replay Debate",
+            dataset: selectedDebate.dataset_name,
+            seed: selectedDebate.seed,
+            num_questions: 1,
+            num_rounds: numRounds,
+            agent_counts: agent_counts,
+            question_index: selectedQuestion,
+            start_from_round: selectedRound,
+            isReplay: true,
+            existingDebateId: result.debate_id,
+          };
+          console.log("Passing replay info to parent:", replayInfo);
+          onReplayStarted(replayInfo);
         }
       } else {
         setError(result.message || "Failed to start replay");
@@ -378,162 +417,140 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
     }
   };
 
-  const filteredDebates = debates.filter(
-    (d) =>
-      d.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      d.uniqueId?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      d.dataset_name?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
-  const currentQuestion = debateDetails?.questions?.[selectedQuestion ?? 0];
-  const numRounds = currentQuestion?.debate_session?.rounds?.length || 0;
-  const agents = currentQuestion?.debate_session?.rounds?.[0]?.responses
-    ? Object.keys(currentQuestion.debate_session.rounds[0].responses)
-    : [];
-
   return (
-    <div className="min-h-screen bg-gray-50 p-6">
-      <div className="max-w-7xl mx-auto">
-        <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-900 mb-2">
-                Debate Debugger
-              </h1>
-              <p className="text-gray-600">
+    <div className="debate-debugger-container">
+      <div className="header">
+        <div className="header-content">
+          <div className="header-main">
+            <div className="header-info">
+              <h1 className="header-title">Debate Debugger</h1>
+              <p className="header-subtitle">
                 Replay completed debates with human intervention
               </p>
             </div>
-            <button
-              onClick={fetchCompletedDebates}
-              disabled={loading}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <RefreshCw
-                className={`w-4 h-4 ${loading ? "animate-spin" : ""}`}
-              />
-              Refresh
-            </button>
+             <Button
+                buttonStyle="secondary"
+                variant="solid"
+                color="blue"
+                icon={RefreshCw}
+                iconPosition="start"
+                iconColor="white"
+                size="lg"
+                onClick={fetchCompletedDebates}
+                disabled={loading}
+              >
+                Refresh
+            </Button>
           </div>
         </div>
+      </div>
 
+      <div className="main-content">
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <p className="text-red-800 font-medium">Error</p>
-              <p className="text-red-700 text-sm">{error}</p>
+          <div className="error-notification">
+            <div className="error-content">
+              <div className="error-icon">
+                <AlertCircle />
+              </div>
+              <div className="error-text">
+                <p className="error-title">Error</p>
+                <p className="error-message">{error}</p>
+              </div>
+              <button onClick={() => setError(null)} className="error-close">
+                ✕
+              </button>
             </div>
-            <button
-              onClick={() => setError(null)}
-              className="text-red-400 hover:text-red-600"
-            >
-              ✕
-            </button>
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-1">
-            <div className="bg-white rounded-lg shadow-sm">
-              <div className="p-4 border-b border-gray-200">
-                <h2 className="text-lg font-semibold text-gray-900 mb-3">
-                  Completed Debates ({debates.length})
-                </h2>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                  <input
-                    type="text"
-                    placeholder="Search debates..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
+        <div className="content-grid">
+          <div className="debates-panel">
+            <div className="debates-header">
+              <h2 className="debates-title">
+                Completed Debates ({debates.length})
+              </h2>
+              <div className="search-container">
+                <Search />
+                <input
+                  type="text"
+                  placeholder="Search debates..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="debates-list">
+              {loading && debates.length === 0 ? (
+                <div className="debates-loading">
+                  <RefreshCw className="spinning" />
+                  <p>Loading debates...</p>
                 </div>
-              </div>
-              <div className="max-h-96 overflow-y-auto">
-                {loading && debates.length === 0 ? (
-                  <div className="p-8 text-center text-gray-500">
-                    <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2" />
-                    Loading debates...
-                  </div>
-                ) : filteredDebates.length === 0 ? (
-                  <div className="p-8 text-center text-gray-500">
-                    {debates.length === 0 ? (
-                      <>
-                        <Brain className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-                        <p className="font-medium">
-                          No completed debates found
-                        </p>
-                        <p className="text-sm mt-1">
-                          Run some debates to get started
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <Search className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-                        <p>No debates match your search</p>
-                      </>
-                    )}
-                  </div>
-                ) : (
-                  filteredDebates.map((debate) => (
-                    <button
-                      key={debate.uniqueId}
-                      onClick={() => handleDebateSelect(debate)}
-                      className={`w-full text-left p-4 border-b border-gray-200 hover:bg-gray-50 transition-colors ${
-                        selectedDebate?.uniqueId === debate.uniqueId
-                          ? "bg-blue-50 border-l-4 border-l-blue-600"
-                          : ""
-                      }`}
-                    >
-                      <div className="font-medium text-gray-900">
-                        {debate.name}
-                      </div>
-                      <div className="text-sm text-gray-500 mt-1">
-                        {new Date(debate.created_at).toLocaleDateString()}
-                      </div>
-                      <div className="flex items-center gap-2 mt-1 flex-wrap">
-                        {debate.debate_id ? (
-                          <span className="text-xs text-gray-400 font-mono">
-                            ID: {debate.debate_id}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-orange-600 font-mono">
-                            External (No replay)
-                          </span>
-                        )}
-                        <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">
-                          {debate.status}
+              ) : filteredDebates.length === 0 ? (
+                <div className="debates-empty">
+                  {debates.length === 0 ? (
+                    <>
+                      <Brain />
+                      <p>No completed debates found</p>
+                      <p className="subtitle">Run some debates to get started</p>
+                    </>
+                  ) : (
+                    <>
+                      <Search />
+                      <p>No debates match your search</p>
+                    </>
+                  )}
+                </div>
+              ) : (
+                filteredDebates.map((debate) => (
+                  <button
+                    key={debate.uniqueId}
+                    onClick={() => handleDebateSelect(debate)}
+                    className={`debate-item ${
+                      selectedDebate?.uniqueId === debate.uniqueId
+                        ? "selected"
+                        : ""
+                    }`}
+                  >
+                    <div className="debate-name">{debate.name}</div>
+                    <div className="debate-date">
+                      {new Date(debate.created_at).toLocaleDateString()}
+                    </div>
+                    <div className="debate-meta">
+                      {debate.debate_id ? (
+                        <span className="debate-id">ID: {debate.debate_id}</span>
+                      ) : (
+                        <span className="debate-external">
+                          External (No replay)
                         </span>
-                      </div>
-                    </button>
-                  ))
-                )}
-              </div>
+                      )}
+                      <span className="debate-status">{debate.status}</span>
+                    </div>
+                  </button>
+                ))
+              )}
             </div>
           </div>
 
-          <div className="lg:col-span-2">
+          <div className="details-panel">
             {!selectedDebate ? (
-              <div className="bg-white rounded-lg shadow-sm p-12 text-center">
-                <Brain className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-                <h3 className="text-xl font-medium text-gray-900 mb-2">
-                  Select a Debate
-                </h3>
-                <p className="text-gray-500">
+              <div className="empty-state">
+                <Brain />
+                <h3>Select a Debate</h3>
+                <p>
                   Choose a completed debate from the list to replay with human
                   intervention
                 </p>
               </div>
             ) : (
-              <div className="space-y-6">
+              <>
                 {!selectedDebate.debate_id && (
-                  <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
-                    <div className="flex items-start gap-3">
-                      <AlertCircle className="w-5 h-5 text-orange-600 shrink-0 mt-0.5" />
-                      <div className="text-sm text-orange-800">
-                        <p className="font-medium mb-1">View Only</p>
+                  <div className="warning-notification">
+                    <div className="warning-content">
+                      <div className="warning-icon">
+                        <AlertCircle />
+                      </div>
+                      <div className="warning-text">
+                        <p className="warning-title">View Only</p>
                         <p>
                           This debate was imported from an external source and
                           cannot be replayed. Only debates created through this
@@ -544,19 +561,29 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
                   </div>
                 )}
 
-                <div className="bg-white rounded-lg shadow-sm p-6">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                <div className="card">
+                  <h3 className="card-title">
                     1. Select Question ({debateDetails?.questions?.length || 0}{" "}
                     total)
                   </h3>
                   {loading && !debateDetails ? (
-                    <div className="text-gray-500 flex items-center justify-center py-8">
-                      <RefreshCw className="w-5 h-5 animate-spin mr-2" />
-                      Loading debate questions...
+                    <div className="debates-loading">
+                      <RefreshCw className="spinning" />
+                      <p>Loading debate questions...</p>
                     </div>
                   ) : debateDetails && debateDetails.questions ? (
                     <>
-                      <div className="grid grid-cols-8 gap-2 mb-4">
+                     {selectedQuestion !== null && (
+                        <div className="question-display">
+                          <div className="question-label">
+                            SELECTED QUESTION {selectedQuestion + 1}
+                          </div>
+                          <div className="question-text">
+                            {debateDetails.questions[selectedQuestion].question}
+                          </div>
+                        </div>
+                      )}
+                      <div className="question-grid">
                         {debateDetails.questions.map((q, idx) => (
                           <button
                             key={idx}
@@ -565,10 +592,8 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
                               setSelectedRound(0);
                               setAgentToReplace(null);
                             }}
-                            className={`aspect-square flex items-center justify-center text-sm font-medium border rounded-lg transition-colors ${
-                              selectedQuestion === idx
-                                ? "border-blue-600 bg-blue-600 text-white"
-                                : "border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-700"
+                            className={`question-button ${
+                              selectedQuestion === idx ? "selected" : ""
                             }`}
                             title={`Question ${idx + 1}: ${q.question.substring(
                               0,
@@ -579,74 +604,54 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
                           </button>
                         ))}
                       </div>
-                      {selectedQuestion !== null && (
-                        <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-                          <div className="text-xs font-semibold text-gray-500 mb-1">
-                            SELECTED QUESTION {selectedQuestion + 1}
-                          </div>
-                          <div className="text-sm text-gray-700">
-                            {debateDetails.questions[selectedQuestion].question}
-                          </div>
-                        </div>
-                      )}
                     </>
                   ) : (
-                    <div className="text-gray-500 text-center py-4">
-                      No questions available
+                    <div className="debates-empty">
+                      <p>No questions available</p>
                     </div>
                   )}
                 </div>
 
                 {selectedQuestion !== null && debateDetails && (
-                  <div className="bg-white rounded-lg shadow-sm p-6">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                      2. Select Starting Round
-                    </h3>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="card">
+                    <h3 className="card-title">2. Select Starting Round</h3>
+                    <div className="rounds-grid">
                       {Array.from({ length: numRounds }, (_, idx) => (
                         <button
                           key={idx}
                           onClick={() => setSelectedRound(idx)}
                           disabled={!selectedDebate.debate_id}
-                          className={`p-4 border rounded-lg text-center transition-colors ${
-                            selectedRound === idx
-                              ? "border-blue-600 bg-blue-50 text-blue-700"
-                              : "border-gray-200 hover:border-blue-300"
-                          } ${
-                            !selectedDebate.debate_id
-                              ? "opacity-50 cursor-not-allowed"
-                              : ""
+                          className={`round-button ${
+                            selectedRound === idx ? "selected" : ""
                           }`}
                         >
-                          <div className="font-semibold">Round {idx}</div>
-                          <div className="text-xs text-gray-500 mt-1">
-                            {idx === 0 ? "Start fresh" : `Resume from here`}
+                          <div className="round-number">Round {idx}</div>
+                          <div className="round-description">
+                            {idx === 0 ? "Start fresh" : "Resume from here"}
                           </div>
                         </button>
                       ))}
                     </div>
 
                     {selectedRound > 0 && currentQuestion && (
-                      <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-                        <div className="text-sm font-medium text-gray-700 mb-2">
+                      <div className="previous-rounds">
+                        <div className="previous-rounds-title">
                           Previous Round Responses:
                         </div>
                         {currentQuestion.debate_session.rounds
                           .slice(0, selectedRound)
                           .map((round, rIdx) => (
-                            <div key={rIdx} className="mb-3 last:mb-0">
-                              <div className="text-xs font-semibold text-gray-600 mb-1">
+                            <div key={rIdx} className="round-preview">
+                              <div className="round-preview-label">
                                 Round {rIdx}
                               </div>
                               {Object.entries(round.responses).map(
                                 ([agent, response]) => (
                                   <div
                                     key={agent}
-                                    className="text-xs text-gray-600 ml-2"
+                                    className="round-preview-response"
                                   >
-                                    <span className="font-medium">
-                                      {agent}:
-                                    </span>{" "}
+                                    <span className="agent-name">{agent}:</span>{" "}
                                     {response.substring(0, 80)}...
                                   </div>
                                 )
@@ -661,37 +666,27 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
                 {selectedQuestion !== null &&
                   debateDetails &&
                   agents.length > 0 && (
-                    <div className="bg-white rounded-lg shadow-sm p-6">
-                      <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                        3. Replace Agent with Human
-                      </h3>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="card">
+                      <h3 className="card-title">3. Replace Agent with Human</h3>
+                      <div className="agents-grid">
                         {agents.map((agent, idx) => (
                           <button
                             key={idx}
                             onClick={() => setAgentToReplace(idx)}
                             disabled={!selectedDebate.debate_id}
-                            className={`p-4 border rounded-lg transition-colors ${
-                              agentToReplace === idx
-                                ? "border-green-600 bg-green-50"
-                                : "border-gray-200 hover:border-green-300"
-                            } ${
-                              !selectedDebate.debate_id
-                                ? "opacity-50 cursor-not-allowed"
-                                : ""
+                            className={`agent-button ${
+                              agentToReplace === idx ? "selected" : ""
                             }`}
                           >
-                            <div className="flex items-center gap-3">
+                            <div className="agent-content">
                               {agentToReplace === idx ? (
-                                <User className="w-5 h-5 text-green-600" />
+                                <User className="human-icon" />
                               ) : (
-                                <Brain className="w-5 h-5 text-gray-400" />
+                                <Brain className="ai-icon" />
                               )}
-                              <div className="text-left">
-                                <div className="font-medium text-gray-900">
-                                  {agent}
-                                </div>
-                                <div className="text-xs text-gray-500">
+                              <div className="agent-info">
+                                <div className="agent-name">{agent}</div>
+                                <div className="agent-description">
                                   {agentToReplace === idx
                                     ? "Will be replaced by human"
                                     : "Click to replace"}
@@ -707,12 +702,14 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
                 {selectedQuestion !== null &&
                   agentToReplace !== null &&
                   selectedDebate.debate_id && (
-                    <div className="bg-white rounded-lg shadow-sm p-6">
-                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
-                        <div className="flex items-start gap-3">
-                          <AlertCircle className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
-                          <div className="text-sm text-blue-800">
-                            <p className="font-medium mb-1">Ready to replay</p>
+                    <div className="card">
+                      <div className="info-notification">
+                        <div className="info-content">
+                          <div className="info-icon">
+                            <AlertCircle />
+                          </div>
+                          <div className="info-text">
+                            <p className="info-title">Ready to replay</p>
                             <p>
                               You will replay question {selectedQuestion + 1}{" "}
                               starting from round {selectedRound}, with{" "}
@@ -724,16 +721,16 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
                       <button
                         onClick={handleReplay}
                         disabled={loading}
-                        className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="replay-button"
                       >
-                        <Play className="w-5 h-5" />
+                        <Play />
                         {loading
                           ? "Starting Replay..."
                           : "Start Replay with Human"}
                       </button>
                     </div>
                   )}
-              </div>
+              </>
             )}
           </div>
         </div>

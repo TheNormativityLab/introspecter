@@ -14,6 +14,7 @@ import {
   getStatus,
   cancelDebate,
   getHumanResponse,
+  getHumanReady,
 } from "./controller/handlers/debugger";
 import { debateRoutes } from "../routes";
 import { authenticateToken } from "../../middleware/auth";
@@ -27,6 +28,7 @@ router.post(debateRoutes.GetNewDebate, getNewDebate);
 router.get(debateRoutes.getDebateRun, getDebateRun);
 router.get(debateRoutes.getStatus, getStatus);
 router.post(debateRoutes.humanResponse, getHumanResponse);
+router.post(debateRoutes.humanReady, getHumanReady);
 router.post(debateRoutes.replayDebate, replayDebate);
 router.post(debateRoutes.cancelDebate, cancelDebate);
 router.get(debateRoutes.getQuestionDetails, getQuestionDetails);

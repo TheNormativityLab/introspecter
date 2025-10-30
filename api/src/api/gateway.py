@@ -20,6 +20,7 @@ from src.database.repository import DebateRepository
 from src.environments.debate.utils import load_and_prepare_data
 from src.api.celery_app import celery_app
 from src.api.websocket_manager import WebSocketManager
+from src.api.websocket_manager import get_ws_manager
 from fastapi import APIRouter, HTTPException, Depends
 from src.environments.debate.utils import get_question_data
 import litellm
@@ -138,16 +139,17 @@ class DebateResponse(BaseModel):
     created_at: datetime
 
 class ReplayDebateRequest(BaseModel):
-    """Request to replay a debate from a specific point."""
-    original_debate_id: uuid.UUID
+    original_debate_id: int
+    start_from_round: int
+    replace_agent_index: Optional[int] = None
+    replace_agent_name: Optional[str] = None
     question_index: int
-    start_from_round: int = 0
-    replace_agent_index: int
     question_data: Dict[str, Any]
-    previous_rounds: List[Dict[str, Any]]
+    previous_rounds: Optional[List[Dict[str, Any]]] = []
     original_config: Dict[str, Any]
-
-
+    def get_debate_id_str(self) -> str:
+        return str(self.original_debate_id)
+    
 class DebateListResponse(BaseModel):
     """Response containing list of debates."""
     debates: List[Dict[str, Any]]
@@ -199,66 +201,158 @@ async def get_debate_repository(session=Depends(get_db_session)):
     """Get debate repository."""
     return DebateRepository(session)
 
+def normalize_model_name(model_name: str) -> str:
+    """
+    Normalize model names for consistent matching.
+    ALWAYS converts to underscore format for consistency.
+    """
+    if not model_name:
+        return ""
+    
+    normalized = model_name.lower().strip()    
+    normalized = normalized.replace("-", "_")    
+    return normalized
+
+
+def get_model_config_name(model_name: str) -> str:
+    """
+    Get the config file name for a model.
+    This should match the YAML filename in conf/llm_conf/ directory.
+    
+    Maps API names to actual config file names.
+    """
+    if not model_name:
+        return ""
+    
+    # Normalize input
+    normalized = model_name.lower().strip().replace("-", "_").replace(".", "_")
+    
+    # Direct mapping for known models
+    config_map = {
+        "llama_3_1_8b": "llama_3_1_8B",
+        "llama_3_1_8b_chat": "llama_3_1_8B",
+        "llama_3_1_8b_instruct": "llama_3_1_8B",
+        "vec_llama_3_1_8b": "llama_3_1_8B", 
+        
+        "mistral_7b": "mistral_7B",
+        "mistral_7b_instruct": "mistral_7B",
+        "vec_mistral_7b": "mistral_7B",
+        
+        "gpt_3_5_turbo": "gpt_3_5_turbo",
+        "gpt_4o_mini": "gpt_4o_mini",
+        
+        "human_participant": "human-participant",
+        "human": "human-participant",
+    }
+    
+    # Try exact match first
+    if normalized in config_map:
+        return config_map[normalized]
+    
+    # Try fuzzy matching for partial names
+    for key, value in config_map.items():
+        if normalized in key or key in normalized:
+            logger.info(f"Fuzzy matched '{model_name}' -> '{value}'")
+            return value
+    
+    # Return as-is if no match found
+    logger.warning(f"No config mapping found for '{model_name}', using as-is")
+    return normalized
 
 @app.websocket("/ws/debates/{debate_id}")
 async def websocket_debate(websocket: WebSocket, debate_id: uuid.UUID):
     """
     WebSocket endpoint for real-time debate communication.
+    Consumer waits for frontend human-ready signal via HTTP.
     """
-    await ws_manager.connect(websocket, str(debate_id))
-    
+    await websocket.accept()
+
     try:
         async with db_manager.get_session() as session:
             repo = DebateRepository(session)
             debate = await repo.get_debate(debate_id)
             if not debate:
-                await websocket.send_json({
-                    "type": "error",
-                    "message": "Debate not found"
-                })
+                await websocket.send_json({"type": "error", "message": "Debate not found"})
                 await websocket.close()
                 return
-        
+
+        config = debate.config or {}
+        has_human = (
+            config.get("human_agent_index") is not None
+            or config.get("replace_agent_index") is not None
+            or config.get("replace_agent_name") is not None
+        )
+
+        is_replay = config.get("is_replay", False) or config.get("original_debate_id") is not None
+
+        logger.info(f"WebSocket connection for debate {debate_id}: has_human={has_human}, is_replay={is_replay}, status={debate.status}")
+
+        # Initialize consumer only; human-ready signal comes via HTTP now
+        consumer_ready_event = asyncio.Event()
+        await ws_manager.connect(websocket, str(debate_id), consumer_ready_event)
+        await asyncio.wait_for(consumer_ready_event.wait(), timeout=10.0)
+        logger.info(f"WebSocket consumer ready for debate {debate_id}")
+
+        # Connection confirmation
         await websocket.send_json({
             "type": "connected",
             "debate_id": str(debate_id),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat(),
+            "waiting_for_human": has_human
         })
-        
-        config = debate.config or {}
-        if config.get('human_agent_index') is not None:
-            logger.info(f"Sending human ready signal for debate {debate_id}")
-            await ws_manager.send_human_ready_signal(str(debate_id))
-            logger.info(f"Sent human ready signal for debate {debate_id}")
-        
+
+        # Main loop for frontend messages
         while True:
             data = await websocket.receive_json()
             message_type = data.get("type")
-            
+
             if message_type == "human_response":
                 await ws_manager.store_human_response(
                     str(debate_id),
                     data.get("response_text"),
                     data.get("extracted_answer")
                 )
-                
                 await websocket.send_json({
                     "type": "response_received",
                     "timestamp": datetime.utcnow().isoformat()
                 })
-            
             elif message_type == "ping":
                 await websocket.send_json({
                     "type": "pong",
                     "timestamp": datetime.utcnow().isoformat()
                 })
-            
+
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout waiting for consumer to be ready for debate {debate_id}")
+        await websocket.send_json({
+            "type": "error",
+            "message": "Consumer initialization timeout"
+        })
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for debate {debate_id}")
     except Exception as e:
-        logger.error(f"WebSocket error for debate {debate_id}: {e}")
+        logger.error(f"WebSocket error for debate {debate_id}: {e}", exc_info=True)
     finally:
         ws_manager.disconnect(str(debate_id))
+
+
+@app.post("/debates/{expId}/human-ready")
+async def signal_human_ready(expId: str):
+    """Signal that the human participant is ready to start."""
+    try:
+        ws_manager = get_ws_manager()
+        await ws_manager.send_human_ready_signal(expId)
+        
+        logger.info(f"Human ready signal sent for debate {expId}")
+        
+        return {
+            "success": True,
+            "message": "Ready signal sent"
+        }
+    except Exception as e:
+        logger.error(f"Failed to send ready signal: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/")
 async def root():
@@ -310,28 +404,39 @@ async def create_debate(request: CreateDebateRequest):
         model_counts = Counter(llm_models)
         logger.info(f"LLM Model distribution (excluding humans): {dict(model_counts)}")
         unique_models = list(model_counts.keys())
+        unique_models = [get_model_config_name(model) for model in unique_models]
+
+        original_model_counts = Counter(llm_models)
+        logger.info(f"LLM Model distribution (excluding humans): {dict(original_model_counts)}")
         
-        if len(unique_models) > 3:
+        mapped_models = [get_model_config_name(model) for model in llm_models]
+        mapped_model_counts = Counter(mapped_models)
+        unique_mapped_models = list(mapped_model_counts.keys())
+        
+        logger.info(f"Mapped model distribution: {dict(mapped_model_counts)}")
+        logger.info(f"Unique mapped models: {unique_mapped_models}")
+
+        if len(unique_mapped_models) > 3:
             raise HTTPException(
                 400, 
                 "Currently only support up to 3 different LLM model types. "
-                f"You requested {len(unique_models)}: {unique_models}"
+                f"You requested {len(unique_mapped_models)}: {unique_mapped_models}"
             )
-        
-        llm1_config = unique_models[0] if unique_models else None
-        llm1_count = model_counts[llm1_config] if llm1_config else 0
+
+        llm1_config = unique_mapped_models[0] if unique_mapped_models else None
+        llm1_count = mapped_model_counts[llm1_config] if llm1_config else 0
         
         llm2_config = None
         llm2_count = 0
-        if len(unique_models) >= 2:
-            llm2_config = unique_models[1]
-            llm2_count = model_counts[llm2_config]
+        if len(unique_mapped_models) >= 2:
+            llm2_config = unique_mapped_models[1]
+            llm2_count = mapped_model_counts[llm2_config]
         
         llm3_config = None
         llm3_count = 0
-        if len(unique_models) == 3:
-            llm3_config = unique_models[2]
-            llm3_count = model_counts[llm3_config]
+        if len(unique_mapped_models) == 3:
+            llm3_config = unique_mapped_models[2]
+            llm3_count = mapped_model_counts[llm3_config]
         
         agent_counts = [llm1_count, llm2_count, llm3_count]
         
@@ -382,6 +487,7 @@ async def create_debate(request: CreateDebateRequest):
         is_custom_run = "custom_questions" in selected_datasets
         other_datasets = [d for d in selected_datasets if d != "custom_questions"]
 
+        # Load custom questions
         if is_custom_run:
             if request.custom_questions:
                 logger.info(f"Loading {len(request.custom_questions)} custom questions")
@@ -397,46 +503,55 @@ async def create_debate(request: CreateDebateRequest):
                 logger.info(f"Formatted {num_custom} custom questions")
             else:
                 raise HTTPException(400, "custom_questions in selectedDatasets but no custom questions provided")
-        else:
-            if not other_datasets:
-                other_datasets = [request.task]
-                logger.info(f"No datasets selected, using task as dataset: {request.task}")
-            
-            if other_datasets:
-                data_paths = {
-                    "gsm8k": "data/GSM8k/gsm8k_test.jsonl",
-                    "mmlu": "data/MMLU_test.json",
-                    "math": "data/MATH_test.jsonl",
-                    "commonsense_qa": "data/commonsense_qa_test.jsonl"
-                }
-                
-                for dataset_name in other_datasets:
-                    data_path = data_paths.get(dataset_name)
-                    
-                    if not data_path:
-                        logger.warning(f"Unknown dataset: {dataset_name}, skipping")
-                        continue
-                    
-                    if not Path(data_path).exists():
-                        logger.warning(f"Data file not found: {data_path}, skipping")
-                        continue
-                    
-                    logger.info(f"Loading {request.num_questions} questions from dataset: {dataset_name}")
-                    dataset_questions = list(load_and_prepare_data(
-                        task_name=dataset_name,
-                        data_path=data_path,
-                        num_questions=request.num_questions,
-                        seed=request.seed,
-                    ))
-                    
-                    logger.info(f"Loaded {len(dataset_questions)} questions from {dataset_name}")
-                    all_questions.extend(dataset_questions)
 
-        questions = all_questions[:request.num_questions]
-        logger.info(f"Final question count: {len(questions)} (custom: {num_custom}, datasets: {len(questions) - num_custom})")
+        # Load regular dataset questions
+        if not other_datasets and not is_custom_run:
+            other_datasets = [request.task]
+            logger.info(f"No datasets selected, using task as dataset: {request.task}")
+
+        if other_datasets:
+            data_paths = {
+                "gsm8k": "data/GSM8k/gsm8k_test.jsonl",
+                "mmlu": "data/MMLU_test.json",
+                "math": "data/MATH_test.jsonl",
+                "commonsense_qa": "data/commonsense_qa.json"
+            }
+            
+            questions_per_dataset = request.num_questions
+            logger.info(f"Loading {questions_per_dataset} questions per dataset from {len(other_datasets)} datasets")
+            
+            for dataset_name in other_datasets:
+                data_path = data_paths.get(dataset_name)
+                
+                if not data_path:
+                    logger.warning(f"Unknown dataset: {dataset_name}, skipping")
+                    continue
+                
+                if not Path(data_path).exists():
+                    logger.warning(f"Data file not found: {data_path}, skipping")
+                    continue
+                
+                logger.info(f"Loading {questions_per_dataset} questions from dataset: {dataset_name}")
+                dataset_questions = list(load_and_prepare_data(
+                    task_name=dataset_name,
+                    data_path=data_path,
+                    num_questions=questions_per_dataset,
+                    seed=request.seed,
+                ))
+                
+                logger.info(f"Loaded {len(dataset_questions)} questions from {dataset_name}")
+                all_questions.extend(dataset_questions)
+
+        questions = all_questions
+        total_regular_questions = len(questions) - num_custom
+        logger.info(f"Final question count: {len(questions)} total")
+        logger.info(f"  - Custom questions: {num_custom}")
+        logger.info(f"  - Regular dataset questions: {total_regular_questions}")
+        logger.info(f"  - Questions per dataset: {total_regular_questions // len(other_datasets) if other_datasets else 0}")
 
         if not questions:
             raise HTTPException(400, "No questions available. Provide custom_questions or select datasets.")
+
 
         is_custom_run = "custom_questions" in selected_datasets
         other_datasets = [d for d in selected_datasets if d != "custom_questions"]
@@ -852,183 +967,96 @@ async def submit_human_response_endpoint(
             detail=f"Failed to submit human response: {str(e)}"
         )
 
-    
-# @app.post("/debates/replay", response_model=DebateResponse, status_code=201)
-# async def replay_debate(request: ReplayDebateRequest):
-#     """
-#     Create a replay of an existing debate from a specific round,
-#     replacing one agent with human input.
-#     """
-#     try:
-#         logger.info(f"Creating replay from debate {request.original_debate_id}")
-#         logger.info(f"Starting from round {request.start_from_round}, replacing agent {request.replace_agent_index}")
-        
-#         # Verify original debate exists
-#         async with db_manager.get_session() as session:
-#             repo = DebateRepository(session)
-#             original_debate = await repo.get_debate(request.original_debate_id)
-#             if not original_debate:
-#                 raise HTTPException(404, "Original debate not found")
-            
-#             if original_debate.status != "completed":
-#                 raise HTTPException(400, "Can only replay completed debates")
-        
-#         # Extract config from original debate
-#         config = request.original_config
-#         task = config.get("task", "gsm8k")
-#         num_agents = config.get("num_agents", 2)
-#         total_rounds = config.get("num_rounds", 3)
-#         seed = config.get("seed", 0)
-#         llm_conf = config.get("llm_conf")
-#         debate_type = original_debate.debate_type
-        
-#         # Calculate remaining rounds
-#         remaining_rounds = total_rounds - request.start_from_round
-#         if remaining_rounds <= 0:
-#             raise HTTPException(400, "Cannot start from or after the last round")
-        
-#         # Build agent_counts for Hydra config
-#         agent_counts = [num_agents, 0]
-        
-#         # Load Hydra config
-#         hydra_cfg = load_hydra_config(
-#             name=f"replay_{original_debate.name}",
-#             task=task,
-#             seed=seed,
-#             llm_conf=llm_conf,
-#             num_questions=1,  # Replaying single question
-#             num_rounds=remaining_rounds,
-#             agent_counts=agent_counts
-#         )
-        
-#         # Create new debate for replay
-#         async with db_manager.get_session() as session:
-#             repo = DebateRepository(session)
-#             debate = await repo.create_debate(
-#                 name=f"Replay: {original_debate.name} (Q{request.question_index+1}, R{request.start_from_round})",
-#                 debate_type=debate_type,
-#                 config={
-#                     **config,
-#                     "is_replay": True,
-#                     "original_debate_id": str(request.original_debate_id),
-#                     "question_index": request.question_index,
-#                     "start_from_round": request.start_from_round,
-#                     "human_agent_index": request.replace_agent_index,
-#                     "num_rounds": remaining_rounds,
-#                 },
-#                 total_questions=1
-#             )
-#             debate_id = debate.id
-#             created_at = debate.created_at
-        
-#         # Convert config to dict for Celery
-#         hydra_cfg_dict = OmegaConf.to_container(hydra_cfg, resolve=True)
-        
-#         # Prepare question data
-#         questions = [{
-#             "question": request.question_data.get("question_text"),
-#             "answer": request.question_data.get("correct_answer"),
-#             "question_prompt": request.question_data.get("question_prompt"),
-#         }]
-        
-#         # Import replay task
-#         from src.api.tasks import run_replay_task
-        
-#         # Queue Celery task
-#         task = run_replay_task.apply_async(
-#             kwargs={
-#                 "debate_id": str(debate_id),
-#                 "debate_type": debate_type,
-#                 "hydra_cfg": hydra_cfg_dict,
-#                 "question_data": request.question_data,
-#                 "start_from_round": request.start_from_round,
-#                 "previous_rounds": request.previous_rounds,
-#                 "num_rounds": remaining_rounds,
-#                 "num_agents": num_agents,
-#                 "human_agent_index": request.replace_agent_index,
-#                 "summarize": config.get("summarize", True),
-#             },
-#             task_id=f"replay-{debate_id}"
-#         )
-        
-#         celery_task_id = task.id
-#         logger.info(f"Queued replay task {celery_task_id} for debate {debate_id}")
-        
-#         # Store task ID
-#         async with db_manager.get_session() as session:
-#             repo = DebateRepository(session)
-#             await repo.update_debate_task_id(debate_id, celery_task_id)
-        
-#         return DebateResponse(
-#             debate_id=debate_id,
-#             debate_type=debate_type,
-#             status="queued",
-#             celery_task_id=celery_task_id,
-#             websocket_url=f"/ws/debates/{debate_id}",
-#             current_question_index=0,
-#             total_questions=1,
-#             human_agent_index=request.replace_agent_index,
-#             created_at=created_at
-#         )
-        
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         logger.error(f"Error creating replay: {e}", exc_info=True)
-#         raise HTTPException(500, detail=str(e))
+@app.post("/debates/replay", response_model=DebateResponse, status_code=201)
+async def replay_debate(request: ReplayDebateRequest):
+    """
+    Create a replay of an existing debate from a specific round,
+    replacing one agent with human input.
+    """
+    try:
+        debate_id_input = request.get_debate_id_str()
+        logger.info(f"Creating replay from debate {debate_id_input}")
 
+        config = request.original_config
+        task = config.get("task", "gsm8k")
+        experiment_name = config.get("experiment_name", "replay_debate")
+        total_rounds = config.get("num_rounds", 3)
+        seed = config.get("seed", 0)
+        debate_type = "basic_debate"
+        
+        # Validate replay parameters
+        if request.start_from_round >= total_rounds:
+            raise HTTPException(400, "Cannot start from or after the last round")
 
-# @app.get("/debates/{debate_id}/question/{question_index}")
-# async def get_question_details(
-#     debate_id: uuid.UUID,
-#     question_index: int,
-#     repo: DebateRepository = Depends(get_debate_repository)
-# ):
-#     """Get detailed information about a specific question in a debate."""
-#     try:
-#         debate = await repo.get_debate(debate_id)
-#         if not debate:
-#             raise HTTPException(404, "Debate not found")
-        
-#         question_sessions = await repo.get_question_sessions(debate_id)
-        
-#         if question_index >= len(question_sessions):
-#             raise HTTPException(404, "Question index out of range")
-        
-#         session = question_sessions[question_index]
-        
-#         question_data = {
-#             "question_id": session.question_id,
-#             "question_text": session.question.question_text if session.question else None,
-#             "question_prompt": session.question.question_prompt if session.question else None,
-#             "correct_answer": session.question.correct_answer if session.question else None,
-#             "rounds": [],
-#         }
-        
-#         rounds = await repo.get_rounds(session.id)
-#         for round_obj in rounds:
-#             round_data = {
-#                 "round_number": round_obj.round_number,
-#                 "responses": {},
-#             }
-            
-#             responses = await repo.get_agent_responses(round_obj.id)
-#             for response in responses:
-#                 round_data["responses"][response.model_name] = {
-#                     "response_text": response.response_text,
-#                     "extracted_answer": response.extracted_answer,
-#                 }
-            
-#             question_data["rounds"].append(round_data)
-        
-#         return question_data
-        
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         logger.error(f"Error getting question details: {e}", exc_info=True)
-#         raise HTTPException(500, detail=str(e))
+        async with db_manager.get_session() as session:
+            repo = DebateRepository(session)
+            debate = await repo.create_debate(
+                name=f"Replay: {experiment_name} (Q{request.question_index+1}, R{request.start_from_round})",
+                debate_type=debate_type,
+                config={
+                    **config,
+                    "question_index": request.question_index,
+                    "is_replay": True,
+                    "start_from_round": request.start_from_round,
+                    "replace_agent_index": request.replace_agent_index,
+                    "replace_agent_name": request.replace_agent_name,
+                    "num_rounds": total_rounds,
+                },
+                total_questions=1
+            )
+            debate_id = debate.id
+            created_at = debate.created_at
 
+        questions = [{
+            "question": request.question_data.get("question_text"),
+            "answer": request.question_data.get("correct_answer"),
+            "question_prompt": request.question_data.get("question_prompt"),
+        }]
+
+        # Queue the replay task
+        from src.api.tasks import run_replay_task
+        task = run_replay_task.apply_async(
+            kwargs={
+                "debate_id": str(debate_id),
+                "debate_type": debate_type,
+                "original_config": config,
+                "questions": questions,
+                "start_from_round": request.start_from_round,
+                "previous_rounds": request.previous_rounds,
+                "num_rounds": total_rounds,
+                "experiment_name": experiment_name,
+                "replace_agent_index": request.replace_agent_index,
+                "replace_agent_name": request.replace_agent_name,
+                "summarize": config.get("summarize", True),
+                "original_debate_id": request.get_debate_id_str(),
+            },
+            task_id=f"replay-{debate_id}"
+        )
+
+        celery_task_id = task.id
+        logger.info(f"Queued replay task {celery_task_id} for debate {debate_id}")
+
+        async with db_manager.get_session() as session:
+            repo = DebateRepository(session)
+            await repo.update_debate_task_id(debate_id, celery_task_id)
+
+        return DebateResponse(
+            debate_id=debate_id,
+            debate_type=debate_type,
+            status="queued",
+            celery_task_id=celery_task_id,
+            websocket_url=f"/ws/debates/{debate_id}",
+            current_question_index=0,
+            total_questions=1,
+            human_agent_index=request.replace_agent_index,
+            created_at=created_at
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating replay: {e}", exc_info=True)
+        raise HTTPException(500, detail=str(e))
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=3001)

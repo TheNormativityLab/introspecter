@@ -655,6 +655,25 @@ export default function DebateDetailsPage() {
     return <>{parts}</>;
   };
 
+  const getStartingRound = (): number => {
+    if (!currentRun?.performance_data || !Array.isArray(currentRun.performance_data)) {
+      return 1;
+    }
+    
+    // Get the first round number from performance_data
+    const firstPerfRound = currentRun.performance_data[0];
+    if (firstPerfRound) {
+      const roundKey = Object.keys(firstPerfRound)[0];
+      const match = roundKey.match(/round_(\d+)/);
+      if (match) {
+        return parseInt(match[1]);
+      }
+    }
+    
+    return 1;
+  };
+
+const startingRound = getStartingRound();
   const processBold = (text: string, startKey: number): React.ReactNode[] => {
     const boldRegex = /\*\*(.*?)\*\*/g;
     const parts: React.ReactNode[] = [];
@@ -847,34 +866,30 @@ export default function DebateDetailsPage() {
                     </div>
 
                     <div className="rounds-container">
-                      {Array.from({ length: numRounds }, (_, roundIndex) => (
+                      {currentQuestionData.debate_session?.rounds?.map((round: any, roundIndex: number) => {
+                      const actualRoundNumber = startingRound + roundIndex;
+                      const isLastRoundInData = roundIndex === currentQuestionData.debate_session.rounds.length - 1;
+                                            
+                      return (
                         <div key={roundIndex} className="round-section">
                           <h4 className="round-header">
-                            Round {roundIndex + 1}
-                            {roundIndex === numRounds - 1 && (
+                            Round {actualRoundNumber}
+                            {isLastRoundInData && (
                               <span className="round-label">(Final)</span>
                             )}
                           </h4>
 
-                          {currentQuestionData.debate_session?.rounds?.[
-                            roundIndex
-                          ] && (
                             <div className="responses-grid">
                               {actualAgentNames.map((agentName) => {
-                                const response =
-                                  currentQuestionData.debate_session.rounds[
-                                    roundIndex
-                                  ].responses[agentName] || "";
+                                const response = round.responses[agentName] || "";
                                 const evaluationKey = `${agentName}_${roundIndex}`;
-                                const evaluation =
-                                  evaluationResults[evaluationKey];
-                                const hasSwitched =
-                                  currentQuestionSwitches.some(
-                                    (s) =>
-                                      s.agentName === agentName &&
-                                      (s.switchedFromRound === roundIndex ||
-                                        s.switchedToRound === roundIndex)
-                                  );
+                                const evaluation = evaluationResults[evaluationKey];
+                                const hasSwitched = currentQuestionSwitches.some(
+                                  (s) =>
+                                    s.agentName === agentName &&
+                                    (s.switchedFromRound === roundIndex ||
+                                      s.switchedToRound === roundIndex)
+                                );
 
                                 return (
                                   <AgentResponse
@@ -883,9 +898,7 @@ export default function DebateDetailsPage() {
                                     response={response}
                                     evaluation={evaluation}
                                     roundIndex={roundIndex}
-                                    isCollapsed={
-                                      collapsedAgents[evaluationKey] || false
-                                    }
+                                    isCollapsed={collapsedAgents[evaluationKey] || false}
                                     hasSwitched={hasSwitched}
                                     questionIndex={selectedQuestion}
                                     onToggleCollapse={() =>
@@ -899,9 +912,9 @@ export default function DebateDetailsPage() {
                                 );
                               })}
                             </div>
-                          )}
-                        </div>
-                      ))}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 </>
@@ -912,44 +925,45 @@ export default function DebateDetailsPage() {
 
         {/* Performance Tab */}
         {activeTab === "performance" && (
-          <div className="content-card">
-            <div className="card-header">
-              <BarChart3 />
-              <h3>Performance Over Rounds</h3>
-            </div>
-            <div className="performance-grid">
-              {currentRun.performance_data?.map(
-                (roundObj: any, index: number) => {
-                  const roundData = roundObj[`round_${index + 1}`] || {};
-                  const majorityVote = roundData.majority_vote || 0;
-
-                  return (
-                    <div key={index} className="performance-round">
-                      <div className="round-title-bar">
-                        <span className="round-label">Round {index + 1}</span>
-                        <span className="majority-score">
-                          {(majorityVote * 100).toFixed(1)}% Majority Vote
-                        </span>
-                      </div>
-                      <div className="agents-performance">
-                        {Object.entries(roundData)
-                          .filter(([key]) => key !== "majority_vote")
-                          .map(([agentKey, score]) => (
-                            <div key={agentKey} className="agent-score-card">
-                              <span className="agent-label">{agentKey}</span>
-                              <span className="score-value">
-                                {((score as number) * 100).toFixed(1)}%
-                              </span>
-                            </div>
-                          ))}
-                      </div>
-                    </div>
-                  );
-                }
-              )}
-            </div>
+        <div className="content-card">
+          <div className="card-header">
+            <BarChart3 />
+            <h3>Performance Over Rounds</h3>
           </div>
-        )}
+          <div className="performance-grid">
+            {currentRun.performance_data?.map((roundObj: any, index: number) => {
+              // Get the round key (e.g., "round_3")
+              const roundKey = Object.keys(roundObj)[0];
+              const roundData = roundObj[roundKey] || {};
+              const roundNumber = parseInt(roundKey.replace('round_', ''));
+              const majorityVote = roundData.majority_vote ?? 0;
+
+              return (
+                <div key={roundKey} className="performance-round">
+                  <div className="round-title-bar">
+                    <span className="round-label">Round {roundNumber}</span>
+                    <span className="majority-score">
+                      {(majorityVote * 100).toFixed(1)}% Majority Vote
+                    </span>
+                  </div>
+                  <div className="agents-performance">
+                    {Object.entries(roundData)
+                      .filter(([key]) => key !== "majority_vote")
+                      .map(([agentKey, score]) => (
+                        <div key={agentKey} className="agent-score-card">
+                          <span className="agent-label">{agentKey}</span>
+                          <span className="score-value">
+                            {((score as number) * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       </div>
     </div>
   );

@@ -8,7 +8,7 @@ export async function POST(req: NextRequest) {
     const requiredFields = [
       "question_index",
       "start_from_round",
-      "replace_agent_index",
+      "replace_agent_name",
       "question_data",
       "previous_rounds",
       "original_config",

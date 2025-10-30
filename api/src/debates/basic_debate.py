@@ -5,7 +5,7 @@ import uuid
 import json
 from typing import List, Optional, Dict, Any
 from collections import Counter
-import time
+import time, re
 from collections import Counter
 from omegaconf import OmegaConf
 from datetime import datetime
@@ -14,7 +14,6 @@ from src.agents.debate.basic_debate_agent import BasicDebateAgent
 from src.llm_api import PromptConfig, LLMConfig
 from src.environments.debate.utils import _normalize_answer as normalize_util
 from src.environments.debate.utils import _answers_match as answers_util
-
 from src.environments.debate.adts import (
     DebateResult,
     DebateRound,
@@ -25,6 +24,27 @@ from src.database.repository import DebateRepository
 
 logger = logging.getLogger(__name__)
 
+
+@staticmethod
+def normalize_model_name(model_name: str) -> str:
+    """
+    Normalize model names for consistent matching.
+    Always converts to hyphen format to match actual model names.
+    
+    Examples:
+        gpt_4o_mini -> gpt-4o-mini
+        gpt_3_5_turbo -> gpt-3.5-turbo
+        gpt-4o-mini -> gpt-4o-mini (unchanged)
+    """
+    if not model_name:
+        return ""
+    
+    normalized = model_name.lower().strip()    
+    if normalized in ['human-participant', 'human', 'mock/human', 'human_participant']:
+        return 'human-participant'    
+    normalized = normalized.replace('_', '-')    
+    normalized = re.sub(r'-(\d+)-(\d+)-', r'-\1.\2-', normalized)
+    return normalized
 
 class BasicDebateOrchestrator:
     def __init__(self):
@@ -87,8 +107,18 @@ class BasicDebateOrchestrator:
         self.agents = await self._create_agents_from_models(hydra_cfg, agent_models)
         
         self.progress_queue = asyncio.Queue()
-        
-        await self._store_wandb_metadata(hydra_cfg, num_agents)
+        from src.api.tasks import store_wandb_metadata
+        await store_wandb_metadata(
+            str(debate_id), 
+            {
+                "task": self.task,
+                "num_rounds": num_rounds,
+                "num_questions": len(questions),
+                "agent_models": agent_models,
+                "llm_configs": self._extract_llm_configs_from_hydra(hydra_cfg, agent_models)
+            },
+            hydra_cfg
+        )
         
         self.status = "ready"
         logger.info(f"Initialized debate {debate_id} with {num_agents} agents in order: {agent_models}")
@@ -121,9 +151,9 @@ class BasicDebateOrchestrator:
         }
         
         llm_configs = {
-            'gpt_4o_mini': hydra_cfg.get("llm1") or {},
-            'gpt_4o': hydra_cfg.get("llm2") or {},
-            'claude_sonnet': hydra_cfg.get("llm3") or {},
+            'llm1': hydra_cfg.get("llm1") or {},
+            'llm2': hydra_cfg.get("llm2") or {},
+            'llm3': hydra_cfg.get("llm3") or {},
         }
         
         agents = []
@@ -222,128 +252,102 @@ class BasicDebateOrchestrator:
         
         return agents
 
-    
-    async def _store_wandb_metadata(self, hydra_cfg: Dict[str, Any], num_agents: int):
-        """Store wandb metadata in database."""
-        try:
-            wandb_metadata = {
-                "startedAt": datetime.utcnow().isoformat(),
-                "parsed_args": {
-                    "seed": str(hydra_cfg.get("seed", 0)),
-                    "task": self.task,
-                    "debug": hydra_cfg.get("debug", False),
-                    "cost_check": hydra_cfg.get("cost_check", False),
-                    "agent_counts.0": num_agents,
-                    "agent_counts.1": 0,
-                    "experiment.name": hydra_cfg.get("experiment", {}).get("name", "unknown"),
-                    "experiment.num_rounds": self.num_rounds,
-                    "experiment.num_questions": len(self.questions)
-                }
-            }
-            
-            async with self.db_manager.get_session() as session:
-                repo = DebateRepository(session)
-                await repo.update_wandb_metadata(self.debate_id, wandb_metadata)
-            
-            logger.info(f"Stored wandb metadata for debate {self.debate_id}")
-        except Exception as e:
-            logger.error(f"Failed to store wandb metadata: {e}", exc_info=True)
-
-    async def _create_agents_from_hydra(
+    async def _create_agents_from_models(
         self,
         hydra_cfg: Dict[str, Any],
-        num_agents: int
+        agent_models: List[str]
     ) -> List[BasicDebateAgent]:
-        """Create agents directly from Hydra config with unique identifiers."""
+        """
+        Create agents in the exact order specified by agent_models.
+        This ensures human agents are placed at the correct index.
         
+        Args:
+            hydra_cfg: Hydra configuration
+            agent_models: List like ['gpt-4o-mini', 'human-participant', 'gpt-3.5-turbo']
+        
+        Returns:
+            List of agents in the specified order
+        """
         task_config = hydra_cfg.get("task", {})
         task = task_config.get("name", "unknown")
         
-        agent_types = hydra_cfg.get("agent_types", [])
+        agent_prompts = hydra_cfg.get("agent_prompts") or {}
+        task_partials = hydra_cfg.get("task", {}).get("partials") or {}
         
-        logger.info(f"Agent types from config: {len(agent_types)} types")
+        prompts = {
+            "system_prompt": agent_prompts.get("system_prompt", "You are a helpful assistant."),
+            "partials": {**(agent_prompts.get("partials") or {}), **task_partials},
+        }
         
-        if not agent_types:
-            agent_counts = hydra_cfg.get("agent_counts", [num_agents, 0, 0])
-            agent_prompts = hydra_cfg.get("agent_prompts") or {}
-            task_partials = hydra_cfg.get("task", {}).get("partials") or {}
-            
-            basic_agent_config = hydra_cfg.get("basic_agent") or {}
-            llm1_config = hydra_cfg.get("llm1") or {}
-            llm2_config = hydra_cfg.get("llm2") or {}
-            llm3_config = hydra_cfg.get("llm3") or {}
-            
-            if agent_counts[0] > 0:
-                prompts = {
-                    "system_prompt": agent_prompts.get("system_prompt", "You are a helpful assistant."),
-                    "partials": {**(agent_prompts.get("partials") or {}), **task_partials},
-                }
-                agent_types.append({
-                    "name": basic_agent_config.get("name", "basic_agent"),
-                    "count": agent_counts[0],
-                    "prompts": prompts,
-                    "llm_config": llm1_config
-                })
-            
-            if len(agent_counts) > 1 and agent_counts[1] > 0:
-                prompts = {
-                    "system_prompt": agent_prompts.get("system_prompt", "You are a helpful assistant."),
-                    "partials": {**(agent_prompts.get("partials") or {}), **task_partials},
-                }
-                agent_types.append({
-                    "name": "background_agent",
-                    "count": agent_counts[1],
-                    "prompts": prompts,
-                    "llm_config": llm2_config
-                })
-            
-            if len(agent_counts) > 2 and agent_counts[2] > 0:
-                prompts = {
-                    "system_prompt": agent_prompts.get("system_prompt", "You are a helpful assistant."),
-                    "partials": {**(agent_prompts.get("partials") or {}), **task_partials},
-                }
-                agent_types.append({
-                    "name": "third_agent",
-                    "count": agent_counts[2],
-                    "prompts": prompts,
-                    "llm_config": llm3_config
-                })
-            
-            logger.info(f"Constructed {len(agent_types)} agent types manually")
+        # Get all available LLM configs from llm1, llm2, llm3
+        available_llm_configs = []
+        for i in range(1, 4):
+            llm_key = f"llm{i}"
+            if llm_key in hydra_cfg and hydra_cfg[llm_key]:
+                available_llm_configs.append(hydra_cfg[llm_key])
+                logger.info(f"Found config at {llm_key}")
         
-        agent_configs = []
-        for agent_type in agent_types:
-            count = agent_type.get("count", 0)
-            for i in range(count):
-                agent_configs.append({
-                    "name": f"{agent_type.get('name', 'agent')}_{i}",
-                    "prompts": agent_type.get("prompts", {}),
-                    "llm_config": agent_type.get("llm_config", {}),
-                })
-        
-        logger.info(f"Created {len(agent_configs)} agent configs for {num_agents} agents")
+        # Build a mapping from normalized model names to their configs
+        model_to_config = {}
+        model_aliases = {}  # Add alias mapping
+
+        for llm_config in available_llm_configs:
+            # Extract model name from the config
+            model_name = None
+            
+            # Try to get from language_models first (most reliable for Hydra configs)
+            if "language_models" in llm_config:
+                lang_models = llm_config["language_models"]
+                if lang_models and len(lang_models) > 0:
+                    first_model = lang_models[0]
+                    # Get from litellm_params.model first, then model_name
+                    if "litellm_params" in first_model:
+                        model_name = first_model["litellm_params"].get("model")
+                    if not model_name:
+                        model_name = first_model.get("model_name")
+            
+            # Fallback to litellm_params at root level
+            if not model_name and "litellm_params" in llm_config:
+                model_name = llm_config["litellm_params"].get("model")
+            
+            # Final fallback to model or modelName fields
+            if not model_name:
+                model_name = llm_config.get("model") or llm_config.get("modelName")
+            
+            if model_name:
+                # Store both normalized and original
+                normalized = normalize_model_name(model_name)
+                model_to_config[normalized] = llm_config
+                model_to_config[model_name] = llm_config  # Also store original
+                
+                # Add common aliases
+                # For together_ai/mistralai/Mistral-7B-Instruct-v0.2
+                if 'mistral' in model_name.lower() and '7b' in model_name.lower():
+                    model_aliases['mistral-7b'] = normalized
+                    model_aliases['mistral_7b'] = normalized
+                
+                # For together_ai/meta-llama/Llama-3-8b-chat-hf
+                if 'llama' in model_name.lower() and '3' in model_name.lower():
+                    model_aliases['llama-3-8b'] = normalized
+                    model_aliases['llama_3_8b'] = normalized
+                
+                logger.info(f"Mapped model '{model_name}' (normalized: '{normalized}') to config")
         
         agents = []
-        model_name_counts = {}
+        human_count = 0
+        model_counts = {}
         
-        for i in range(min(num_agents, len(agent_configs))):
-            prompts = agent_configs[i]["prompts"]
-            llm_config_dict = agent_configs[i]["llm_config"]
-            agent_name = agent_configs[i]["name"]
+        logger.info(f"Creating {len(agent_models)} agents in specified order")
+        
+        for agent_idx, model_name in enumerate(agent_models):
+            logger.info(f"Creating agent {agent_idx}: {model_name}")
             
-            is_human_agent = False
-            model_field = ""
-            api_base_field = ""
-            try:
-                litellm_params = llm_config_dict.get("litellm_params") or {}
-                model_field = litellm_params.get("model", "") or ""
-                api_base_field = litellm_params.get("api_base", "") or ""
-                if model_field.lower().startswith("mock/human") or api_base_field == "none":
-                    is_human_agent = True
-            except Exception:
-                pass
+            is_human = normalize_model_name(model_name) == 'human-participant'
             
-            if is_human_agent:
+            if is_human:
+                agent_name = f"human_agent_{human_count}"
+                human_count += 1
+                
                 agent = BasicDebateAgent(
                     config=AgentConfig(
                         prompt_config=PromptConfig(
@@ -353,14 +357,15 @@ class BasicDebateOrchestrator:
                         llm_config=None,
                         name=agent_name,
                     ),
-                    num_agents=num_agents,
+                    num_agents=len(agent_models),
                     domain=task,
                     debug=False,
                 )
-
+                
                 await agent.build()
                 await agent.reset()
-
+                
+                # Track human agent
                 self.human_agent_names.add(agent.name)
                 self.human_agent_name = agent.name
                 self.agent_metadata[agent.name] = {
@@ -369,32 +374,90 @@ class BasicDebateOrchestrator:
                     "agent_instance": agent
                 }
                 self.agent_name_map[agent.name] = agent
-                logger.info(f"Registered human agent: name='{agent.name}' (skipped LLM init)")
-
-                agents.append(agent)
-                continue
-
-            llm_config_omega = OmegaConf.create(llm_config_dict)
-            
-            try:
-                temp_llm_config = LLMConfig.from_hydra_config(llm_config_omega)
-                potential_model_name = temp_llm_config.language_models[0].model_name if temp_llm_config.language_models else ""
-                if potential_model_name and ("human" in potential_model_name.lower() or "mock/human" in potential_model_name.lower()):
-                    is_human_agent = True
-            except Exception:
-                pass
-            
-            if is_human_agent:
+                
+                logger.info(f"✓ Created human agent at position {agent_idx}: {agent.name}")
+                
+            else:
+                if model_name not in model_counts:
+                    model_counts[model_name] = 0
+                
+                agent_name = f"{model_name}_agent_{model_counts[model_name]}"
+                model_counts[model_name] += 1
+                
+                # Find the matching config by trying multiple lookup strategies
+                normalized_model = normalize_model_name(model_name)
+                llm_config_dict = None
+                
+                # Strategy 1: Try normalized name (with hyphens)
+                if normalized_model in model_to_config:
+                    llm_config_dict = model_to_config[normalized_model]
+                    logger.info(f"  Found config via normalized name: {normalized_model}")
+                
+                # Strategy 2: Try original name as-is
+                if not llm_config_dict and model_name in model_to_config:
+                    llm_config_dict = model_to_config[model_name]
+                    logger.info(f"  Found config via original name: {model_name}")
+                
+                # Strategy 3: Try with underscores (for cases where model_name has hyphens)
+                if not llm_config_dict:
+                    alt_name_underscores = model_name.replace('-', '_')
+                    if alt_name_underscores in model_to_config:
+                        llm_config_dict = model_to_config[alt_name_underscores]
+                        logger.info(f"  Found config via underscore name: {alt_name_underscores}")
+                
+                # Strategy 4: Try with hyphens (for cases where model_name has underscores)
+                if not llm_config_dict:
+                    alt_name_hyphens = model_name.replace('_', '-')
+                    if alt_name_hyphens in model_to_config:
+                        llm_config_dict = model_to_config[alt_name_hyphens]
+                        logger.info(f"  Found config via hyphen name: {alt_name_hyphens}")
+                
+                # Strategy 5: Fuzzy match - check if the normalized model name appears in any available config
+                if not llm_config_dict:
+                    normalized_lower = normalized_model.lower()
+                    for config_key, config in model_to_config.items():
+                        config_key_lower = config_key.lower()
+                        # Check if the requested model is contained in the config key
+                        # e.g., "llama-3.1-8b" should match "together-ai/meta-llama/meta-llama-3.1-8b-instruct-turbo"
+                        if normalized_lower in config_key_lower:
+                            llm_config_dict = config
+                            logger.info(f"  Found config via fuzzy match: '{normalized_model}' found in '{config_key}'")
+                            break
+                
+                # Strategy 6: Token-based matching - match key components
+                if not llm_config_dict:
+                    # Extract key tokens from the requested model name
+                    requested_tokens = set(re.findall(r'[a-z]+|\d+(?:\.\d+)?', normalized_model.lower()))
+                    
+                    best_match = None
+                    best_match_score = 0
+                    
+                    for config_key in model_to_config.keys():
+                        config_tokens = set(re.findall(r'[a-z]+|\d+(?:\.\d+)?', config_key.lower()))
+                        # Calculate overlap
+                        overlap = len(requested_tokens & config_tokens)
+                        if overlap > best_match_score and overlap >= len(requested_tokens) * 0.7:  # At least 70% match
+                            best_match = config_key
+                            best_match_score = overlap
+                    
+                    if best_match:
+                        llm_config_dict = model_to_config[best_match]
+                        logger.info(f"  Found config via token matching: '{normalized_model}' matched '{best_match}' (score: {best_match_score})")
+                
+                logger.info(f"  Using config keys: {list(llm_config_dict.keys())}")
+                
+                llm_config_omega = OmegaConf.create(llm_config_dict)
+                
                 agent = BasicDebateAgent(
                     config=AgentConfig(
                         prompt_config=PromptConfig(
                             system_prompt=prompts.get("system_prompt", "You are a helpful assistant."),
                             partials=prompts.get("partials", {}),
                         ),
-                        llm_config=None,
+                        llm_config=LLMConfig.from_hydra_config(llm_config_omega),
                         name=agent_name,
                     ),
-                    num_agents=num_agents,
+                    num_agents=len(agent_models),
                     domain=task,
                     debug=False,
                 )
@@ -402,63 +465,52 @@ class BasicDebateOrchestrator:
                 await agent.build()
                 await agent.reset()
                 
-                self.human_agent_names.add(agent.name)
-                self.human_agent_name = agent.name
+                actual_model_name = "unknown"
+                try:
+                    actual_model_name = agent.config.llm_config.language_models[0].model_name if agent.config.llm_config.language_models else model_name
+                except Exception:
+                    actual_model_name = model_name
+                
                 self.agent_metadata[agent.name] = {
-                    "model_name": "human", 
-                    "is_human": True,
-                    "agent_instance": agent
+                    "model_name": actual_model_name,
+                    "is_human": False
                 }
                 self.agent_name_map[agent.name] = agent
-                logger.info(f"Registered human agent (late detection): name='{agent.name}'")
                 
-                agents.append(agent)
-                continue
-            
-            agent = BasicDebateAgent(
-                config=AgentConfig(
-                    prompt_config=PromptConfig(
-                        system_prompt=prompts.get("system_prompt", "You are a helpful assistant that can answer questions and provide helpful information."),
-                        partials=prompts.get("partials", {}),
-                    ),
-                    llm_config=LLMConfig.from_hydra_config(llm_config_omega),
-                    name=agent_name,
-                ),
-                num_agents=num_agents,
-                domain=task,
-                debug=False,
-            )
-            
-            await agent.build()
-            await agent.reset()
-            
-            model_name = "unknown"
-            try:
-                model_name = agent.config.llm_config.language_models[0].model_name if agent.config.llm_config.language_models else "unknown"
-            except Exception:
-                pass
-            
-            if model_name not in model_name_counts:
-                model_name_counts[model_name] = 0
-            model_name_counts[model_name] += 1
-            
-            self.agent_metadata[agent.name] = {
-                "model_name": model_name,
-                "is_human": False
-            }
-            self.agent_name_map[agent.name] = agent
-            logger.info(f"Registered LLM agent: name='{agent.name}', model='{model_name}'")
+                logger.info(f"✓ Created LLM agent at position {agent_idx}: {agent.name} ({actual_model_name})")
             
             agents.append(agent)
         
-        num_human = len(self.human_agent_names)
-        num_llm = len(agents) - num_human
-        logger.info(f"Successfully created {len(agents)} agents ({num_human} human, {num_llm} LLM)")
+        logger.info(f"Successfully created {len(agents)} agents ({human_count} human, {len(agents) - human_count} LLM)")
+        logger.info(f"Agent order: {[a.name for a in agents]}")
+        
         return agents
     
     def is_human_agent(self, agent_name: str) -> bool:
         """Helper method to check if an agent is human."""
         return agent_name in self.human_agent_names
+
+    def _extract_llm_configs_from_hydra(self, hydra_cfg: Dict[str, Any], agent_models: List[str]) -> Dict[str, Any]:
+        """Extract LLM configs for metadata storage."""
+        llm_configs = {}
+        model_counts = {}
+        
+        for model in agent_models:
+            if model.lower() not in ['human-participant', 'human', 'mock/human']:
+                if model not in model_counts:
+                    model_counts[model] = 0
+                model_counts[model] += 1
+        
+        # Map to llm1, llm2, llm3 format
+        for idx, (model, count) in enumerate(model_counts.items(), 1):
+            if idx <= 3:
+                llm_key = f"llm{idx}"
+                llm_configs[llm_key] = {
+                    "model": model,
+                    "count": count
+                }
+        
+        return llm_configs
 
     async def _generate_agent_response(self, agent: BasicDebateAgent, timeout: int = 300) -> str:
         """Wrapper that handles both human and LLM agent response generation."""
@@ -555,7 +607,118 @@ class BasicDebateOrchestrator:
         })
         
         return current_round
-    
+
+    async def _replay_round(
+        self,
+        question: str,
+        question_prompt: Optional[str],
+        round_number: int,
+        human_agent_index: Optional[int] = None,
+        previous_response: Optional[Dict[str, Any]] = None
+    ) -> DebateRound:
+        """
+        Replay a single debate round, optionally using previous AI responses.
+        
+        Args:
+            question: The question text
+            question_prompt: Optional detailed question prompt
+            round_number: Current round number (0-indexed)
+            human_agent_index: Index of human agent if present
+            previous_response: Previous round data with AI responses to restore
+            
+        Returns:
+            DebateRound with responses from this round
+        """
+        logger.info(f"=== REPLAYING ROUND {round_number} ===")
+        logger.info(f"Human agent index: {human_agent_index}")
+        logger.info(f"Has previous response: {previous_response is not None}")
+        
+        current_round = DebateRound(round_number=round_number)
+        
+        # If we have previous responses, restore them to agent history
+        if previous_response and round_number > 0:
+            logger.info("Restoring previous round responses to agent history")
+            
+            # Extract responses from previous_response
+            # Structure: {"agent_name": {"response": "...", "extracted_answer": "..."}}
+            for agent in self.agents:
+                agent_name = agent.name
+                
+                # Try to find this agent's previous response
+                if agent_name in previous_response:
+                    prev_resp = previous_response[agent_name].get("response", "")
+                    if prev_resp and hasattr(agent, 'answer_history'):
+                        agent.answer_history.append(prev_resp)
+                        logger.info(f"Restored response for {agent_name}: {prev_resp[:100]}...")
+                else:
+                    # Try matching by agent type (e.g., gpt-3.5-turbo matches gpt_3_5_turbo_agent_0)
+                    for prev_agent_name, prev_data in previous_response.items():
+                        if prev_agent_name in agent_name or agent_name in prev_agent_name:
+                            prev_resp = prev_data.get("response", "")
+                            if prev_resp and hasattr(agent, 'answer_history'):
+                                agent.answer_history.append(prev_resp)
+                                logger.info(f"Restored response for {agent_name} (matched {prev_agent_name})")
+                                break
+        
+        # Add discussion context if not the first round
+        if round_number > 0:
+            async def add_discussion_with_semaphore(agent):
+                async with self.semaphore:
+                    other_answers = []
+                    for a in self.agents:
+                        if a != agent and hasattr(a, 'answer_history') and a.answer_history:
+                            other_answers.append(a.answer_history[-1])
+                    
+                    if not other_answers:
+                        logger.warning(f"No previous answers available for agent {agent.name}")
+                        return
+                    
+                    return await agent.add_discussion_with_other_agents_in_context(
+                        other_answers,
+                        summarize=self.summarize,
+                        additional_context=question_prompt
+                            if self.task in ["math", "gsm8k"]
+                            else None,
+                    )
+            
+            # Add discussion context for all agents
+            discussion_tasks = [
+                add_discussion_with_semaphore(agent) 
+                for agent in self.agents
+            ]
+            await asyncio.gather(*discussion_tasks)
+        
+        # Generate new responses for this round
+        # Human agent will be handled through the wait mechanism
+        # AI agents generate their responses
+        async def generate_answer_with_semaphore(agent):
+            async with self.semaphore:
+                return await self._generate_agent_response(agent)
+        
+        # Generate responses for all agents
+        answer_tasks = [
+            generate_answer_with_semaphore(agent) 
+            for agent in self.agents
+        ]
+        await asyncio.gather(*answer_tasks)
+        
+        # Collect responses using the unique agent names
+        for agent in self.agents:
+            response = agent.latest_response()
+            current_round.add_response(agent.name, response)
+            logger.info(f"Added response for agent '{agent.name}'")
+            logger.info(f"Response preview: {response[:100]}...")
+        
+        logger.info(f"=== REPLAY ROUND {round_number} COMPLETE ===")
+        logger.info(f"Collected responses from: {list(current_round.responses.keys())}")
+        
+        await self._emit_progress("round_replayed", {
+            "round_number": round_number,
+            "responses": current_round.responses
+        })
+        
+        return current_round
+
     async def _store_round(
         self, 
         round_data: DebateRound, 
@@ -567,6 +730,7 @@ class BasicDebateOrchestrator:
         logger.info(f"Round responses: {list(round_data.responses.keys())}")
         logger.info(f"Number of agents: {len(self.agents)}")
         logger.info(f"Correct answer: '{correct_answer}'")
+        logger.info(f"Config agent_models: {self.config.get('agent_models') if self.config else 'No config'}")
         
         async with self.db_manager.get_session() as session:
             repo = DebateRepository(session)
@@ -633,18 +797,62 @@ class BasicDebateOrchestrator:
                     is_human = (agent_idx == human_agent_index)
                     
                     logger.info(f"  Agent {agent_idx} correctness check:")
+                    logger.info(f"    Agent name: '{agent.name}'")
                     logger.info(f"    Extracted: '{extracted_answer}'")
                     logger.info(f"    Correct answer: '{correct_answer}'")
                     logger.info(f"    Is correct: {is_correct}")
                     
-                    metadata = self.agent_metadata.get(agent.name, {})
-                    if is_human:
-                        model_name = "human"
+                    # FIX: Properly determine model name from config
+                    model_name = None
+                    
+                    # Strategy 1: Use agent_models from config (MOST RELIABLE)
+                    if self.config and 'agent_models' in self.config:
+                        agent_models = self.config['agent_models']
+                        logger.info(f"    agent_models list: {agent_models}")
+                        logger.info(f"    Looking up index {agent_idx} in agent_models")
+                        
+                        if agent_idx < len(agent_models):
+                            raw_model = agent_models[agent_idx]
+                            logger.info(f"    raw_model from config: '{raw_model}'")
+                            
+                            # Normalize the model name (convert underscores to hyphens)
+                            if raw_model.lower() in ['human-participant', 'human', 'mock/human']:
+                                model_name = "human"
+                            else:
+                                # Convert gpt_3_5_turbo -> gpt-3.5-turbo, gpt_4o_mini -> gpt-4o-mini
+                                model_name = raw_model.replace('_', '-')
+                            
+                            logger.info(f"    Normalized model name: '{model_name}'")
                     else:
+                        logger.warning(f"    No agent_models in config!")
+                    
+                    # Strategy 2: Check if human from metadata
+                    if not model_name and is_human:
+                        model_name = "human"
+                        logger.info(f"    Detected as human agent via human_agent_index")
+                    
+                    # Strategy 3: Use metadata if available
+                    if not model_name:
+                        metadata = self.agent_metadata.get(agent.name, {})
                         model_name = metadata.get('model_name')
-                        if not model_name:
-                            # Fallback to extracting from config
-                            model_name = agent.config.llm_config.language_models[0].model_name if agent.config.llm_config.language_models else "unknown"
+                        if model_name:
+                            logger.info(f"    Retrieved model from metadata: '{model_name}'")
+                    
+                    # Strategy 4: Extract from agent config
+                    if not model_name or model_name == "unknown":
+                        try:
+                            if agent.config.llm_config and agent.config.llm_config.language_models:
+                                model_name = agent.config.llm_config.language_models[0].model_name
+                                logger.info(f"    Retrieved model from agent.config.llm_config: '{model_name}'")
+                        except Exception as e:
+                            logger.warning(f"    Failed to extract model from agent config: {e}")
+                    
+                    # Final fallback
+                    if not model_name:
+                        model_name = "unknown"
+                        logger.warning(f"    Could not determine model name for agent {agent_idx}, using 'unknown'")
+                    
+                    logger.info(f"  *** FINAL model_name for agent {agent_idx}: '{model_name}' ***")
                     
                     await repo.create_agent_response(
                         round_id=round_obj.id,
@@ -657,10 +865,10 @@ class BasicDebateOrchestrator:
                     )
                     
                     stored_count += 1
-                    logger.info(f"Stored response for agent {agent_idx} ({model_name}) - correct: {is_correct}")
+                    logger.info(f"✓ Stored response for agent {agent_idx} with model_name='{model_name}' - correct: {is_correct}")
                 else:
                     logger.warning(f"No response found for agent {agent_idx} (name='{agent.name}')")
-            
+
     async def _create_question_session(
         self, 
         question: str, 
@@ -764,8 +972,12 @@ class BasicDebateOrchestrator:
         if not debate:
             logger.error(f"Debate {self.debate_id} not found for performance calculation")
             return
+        
         round_performances = {}        
         round_distribution = {}
+        
+        # Track model counts to reconstruct agent names correctly
+        model_index_map = {}  # Maps (round_num, model_name) -> local_index
         
         for question_session in debate.question_sessions:
             for round_obj in question_session.rounds:
@@ -786,8 +998,36 @@ class BasicDebateOrchestrator:
                 
                 round_perf.setdefault("majority_vote", []).append(round_obj.majority_vote)
                 
-                for response in round_obj.agent_response_records:
-                    agent_key = f"{response.model_name}_agent_{response.agent_index}"
+                logger.info(f"Processing round {round_num}, {len(round_obj.agent_response_records)} responses")
+                
+                # Reset model counters for each round to properly reconstruct agent names
+                round_model_counts = {}
+                
+                # First pass: build the mapping of agent_index -> agent_name by counting models
+                # Sort by agent_index to maintain order
+                sorted_responses = sorted(round_obj.agent_response_records, key=lambda r: r.agent_index)
+                
+                for response in sorted_responses:
+                    model_name = response.model_name
+                    
+                    # Track count for this model in this round
+                    if model_name not in round_model_counts:
+                        round_model_counts[model_name] = 0
+                    
+                    local_index = round_model_counts[model_name]
+                    round_model_counts[model_name] += 1
+                    
+                    # Reconstruct the agent key that matches what's stored
+                    # This should match the format from _store_round
+                    if response.is_human:
+                        agent_key = f"human_agent_{local_index}"
+                    else:
+                        agent_key = f"{model_name}_agent_{local_index}"
+                    
+                    logger.info(f"  Response: agent_index={response.agent_index}, model_name='{model_name}', "
+                            f"is_human={response.is_human}, is_correct={response.is_correct}")
+                    logger.info(f"  Reconstructed agent_key: '{agent_key}'")
+                    
                     round_perf.setdefault(agent_key, [])
                     if response.is_correct is not None:
                         round_perf[agent_key].append(1 if response.is_correct else 0)
@@ -796,6 +1036,7 @@ class BasicDebateOrchestrator:
         logger.info(f"Total question sessions: {len(debate.question_sessions)}")
         logger.info(f"Expected rounds per question: {self.num_rounds}")
         logger.info(f"Display rounds found: {sorted(round_performances.keys())}")
+        logger.info(f"Round performances before formatting: {round_performances}")
 
         formatted_performance = []
         for display_round_num in sorted(round_performances.keys()):

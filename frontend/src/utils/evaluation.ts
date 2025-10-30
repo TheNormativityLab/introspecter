@@ -27,85 +27,76 @@ function parseMmluAnswer(
 ): string | null {
   const defaultValidOptions = ["A", "B", "C", "D", "E"];
   const options = validOptions || defaultValidOptions;
-
   const cleanStr = inputStr.trim();
-
   const patterns = [
+    {
+      regex: /\(X\)\s*([A-E])\)/gi,
+      priority: 11,
+      captureGroup: 1,
+    },
     {
       regex:
         /(?:answer\s+is\s*|final\s+answer\s*(?:is)?\s*:?\s*|therefore[^.]*?answer[^.]*?is\s*|thus[^.]*?answer[^.]*?is\s*|my\s+(?:updated\s+)?answer\s+is\s*)\(?([A-E])\)?/gi,
       priority: 10,
       captureGroup: 1,
     },
-
     {
       regex: /\(([A-E])\)\s*\.?\s*$/gi,
       priority: 9,
       captureGroup: 1,
     },
-
     {
       regex:
         /(?:thus|therefore|hence|so|in conclusion)[^.]*?(?:answer|option|choice)[^.]*?\(?([A-E])\)?(?=.{0,50}$)/gi,
       priority: 8,
       captureGroup: 1,
     },
-
     {
       regex:
         /(?:the\s+)?(?:correct\s+)?answer\s+is\s+(?:option\s+)?\(?([A-E])\)?/gi,
       priority: 7,
       captureGroup: 1,
     },
-
     {
       regex:
         /(?:I\s+(?:choose|select|pick)|my\s+choice\s+is)\s+(?:option\s+)?\(?([A-E])\)?/gi,
       priority: 6,
       captureGroup: 1,
     },
-
     {
       regex: /\b(?:option|choice)\s+([A-E])\b/gi,
       priority: 5,
       captureGroup: 1,
     },
-
     {
       regex: /([A-E])\)\s*[a-z\s]+/gi,
       priority: 4,
       captureGroup: 1,
     },
-
     {
       regex: /\(([A-E])\)/g,
       priority: 3,
       captureGroup: 1,
     },
-
     {
       regex: /\b([A-E])\)/g,
       priority: 2,
       captureGroup: 1,
     },
-
     {
       regex: /\b([A-E])\b/g,
       priority: 1,
       captureGroup: 1,
     },
   ];
-
   const candidates: Array<{
     answer: string;
     priority: number;
     position: number;
     context: string;
   }> = [];
-
   for (const pattern of patterns) {
     const matches = [...cleanStr.matchAll(pattern.regex)];
-
     for (const match of matches) {
       const candidate = match[pattern.captureGroup]?.toUpperCase();
       if (candidate && options.includes(candidate)) {
@@ -115,7 +106,6 @@ function parseMmluAnswer(
           (match.index || 0) + match[0].length + 50
         );
         const context = cleanStr.slice(contextStart, contextEnd).toLowerCase();
-
         candidates.push({
           answer: candidate,
           priority: pattern.priority,
@@ -125,7 +115,6 @@ function parseMmluAnswer(
       }
     }
   }
-
   if (candidates.length === 0) {
     return null;
   }
@@ -270,7 +259,8 @@ function parseMathAnswer(inputStr: string): number | null {
 
 function parseGsm8kAnswer(inputStr: string): string | null {
   if (typeof inputStr !== "string") return null;
-
+  
+  // Try brace pattern first: {10}
   const bracePattern = /\{([0-9.,$]*)\}/g;
   try {
     const braceMatches = [...inputStr.matchAll(bracePattern)];
@@ -279,8 +269,26 @@ function parseGsm8kAnswer(inputStr: string): string | null {
       if (solution) return solution;
     }
   } catch (err) {
-    console.warn("GSM8K parse failed:", err);
+    console.warn("GSM8K brace parse failed:", err);
   }
+  
+  // Try "Answer: X" pattern
+  const answerPattern = /Answer:\s*([0-9.,]+)/i;
+  const answerMatch = inputStr.match(answerPattern);
+  if (answerMatch) {
+    const solution = answerMatch[1].replace(/[^0-9.]/g, "");
+    if (solution) return solution;
+  }
+  
+  // Try "the answer is X" pattern (case insensitive)
+  const isPattern = /the answer is\s*([0-9.,]+)/i;
+  const isMatch = inputStr.match(isPattern);
+  if (isMatch) {
+    const solution = isMatch[1].replace(/[^0-9.]/g, "");
+    if (solution) return solution;
+  }
+  
+  // Fallback to solveMathProblems
   return solveMathProblems(inputStr);
 }
 

@@ -61,7 +61,7 @@ export default function NewDebatePage() {
   const [showCustomQuestions, setShowCustomQuestions] = useState(false);
   const [showProgressMonitor, setShowProgressMonitor] = useState(false);
 
-  const availableModels = ["gpt_4o_mini", "gpt_3_5_turbo", "human-participant"];
+  const availableModels = ["gpt_4o_mini", "gpt_3_5_turbo", "mistral-7b", "llama_3_1_8B", "human-participant"];
 
   const availableDatasets = [
     { value: "gsm8k", label: "GSM8K (Math Word Problems)" },
@@ -180,11 +180,15 @@ export default function NewDebatePage() {
     formData.agents.filter((agent) => agent.enabled);
 
   const getTotalQuestions = () => {
-    const datasetQuestions = formData.numQuestions;
+    const datasetCount = formData.selectedDatasets.filter(
+      (d) => d !== "custom"
+    ).length;
+
+    const datasetQuestions = formData.numQuestions * datasetCount;
     const customQuestions = formData.customQuestions.filter(
       (q) => q.question.trim() !== ""
     ).length;
-    return datasetQuestions;
+    return datasetQuestions + customQuestions;
   };
 
   const isFormValid = () => {
@@ -650,8 +654,8 @@ export default function NewDebatePage() {
                     {formData.experimentName || "Not set"}
                   </li>
                   <li>
-                    <strong>Questions:</strong> {getTotalQuestions()} (applied
-                    to each dataset)
+                    <strong>Total Questions:</strong> {getTotalQuestions()} (
+                    {formData.numQuestions} per selected dataset)
                   </li>
                   <li>
                     <strong>Rounds:</strong> {formData.numRounds}

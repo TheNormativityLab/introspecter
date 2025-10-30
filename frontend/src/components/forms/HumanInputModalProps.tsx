@@ -1,6 +1,12 @@
 import React, { useState, useEffect } from "react";
 import { Send, X, Bot, Clock } from "lucide-react";
 
+interface PreviousRounds {
+  [roundKey: string]: {
+    [agentName: string]: string;
+  };
+}
+
 interface HumanInputModalProps {
   isOpen: boolean;
   questionData: {
@@ -8,7 +14,9 @@ interface HumanInputModalProps {
     question_prompt?: string;
     round_number?: number;
     agent_index?: number;
-    previous_responses?: string[];
+    previous_responses?: string[]; // Old format (deprecated)
+    previous_rounds?: PreviousRounds; // New format
+    replace_agent_name?: string; // New field
   };
   onSubmit: (responseText: string, extractedAnswer: string) => void;
   onClose: () => void;
@@ -63,20 +71,34 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
     }
   };
 
-  const parseResponse = (resp: string) => {
-    const match = resp.match(/^(\[Round \d+\] )?(.+?):\s*(.+)$/s);
-    if (match) {
-      return {
-        prefix: match[1] || "",
-        agentName: match[2],
-        response: match[3],
-      };
+  // Helper to format agent names nicely
+  const formatAgentName = (agentName: string): string => {
+    const parts = agentName.split('_agent_');
+    if (parts.length === 2) {
+      const modelName = parts[0]
+        .replace(/-/g, ' ')
+        .split(' ')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+      return `${modelName} (Agent ${parts[1]})`;
     }
-    return {
-      prefix: "",
-      agentName: "Agent",
-      response: resp,
-    };
+    return agentName;
+  };
+
+  // Helper to check if agent is the one being replaced
+  const isReplacedAgent = (agentName: string): boolean => {
+    if (!questionData.replace_agent_name) return false;
+    const agentModel = agentName.split('_agent_')[0].toLowerCase();
+    const replacedModel = questionData.replace_agent_name.toLowerCase().replace(/_/g, '-');
+    return agentModel === replacedModel;
+  };
+
+  const convertFractionsToLatex = (text: string) => {
+    return text.replace(/\\frac\{(\d+)\}\{(\d+)\}/g, (_, numerator, denominator) => {
+      return `\\frac{${numerator}}{${denominator}}`;
+    }).replace(/\b(\d+)\/(\d+)\b/g, (_, numerator, denominator) => {
+      return `\\frac{${numerator}}{${denominator}}`;
+    });
   };
 
   const renderLatex = (text: string) => {
@@ -142,11 +164,7 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
 
     return <>{parts}</>;
   };
-  const convertFractionsToLatex = (text: string) => {
-    return text.replace(/\b(\d+)\/(\d+)\b/g, (_, numerator, denominator) => {
-      return `\\frac{${numerator}}{${denominator}}`;
-    });
-  };
+
   const processBold = (text: string, startKey: number): React.ReactNode[] => {
     const boldRegex = /\*\*(.*?)\*\*/g;
     const parts: React.ReactNode[] = [];
@@ -176,6 +194,28 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
 
     return parts;
   };
+
+  // Get previous rounds data - support both old and new format
+  const getPreviousRoundsData = () => {
+    // New format: previous_rounds object
+    if (questionData.previous_rounds && Object.keys(questionData.previous_rounds).length > 0) {
+      return Object.entries(questionData.previous_rounds)
+        .sort(([keyA], [keyB]) => {
+          const numA = parseInt(keyA.split('_')[1]);
+          const numB = parseInt(keyB.split('_')[1]);
+          return numA - numB;
+        });
+    }
+    
+    // Old format: previous_responses array
+    if (questionData.previous_responses && questionData.previous_responses.length > 0) {
+      return null; // Will use old rendering
+    }
+    
+    return [];
+  };
+
+  const previousRoundsData = getPreviousRoundsData();
 
   return (
     <div
@@ -301,136 +341,203 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
                   fontWeight: "500",
                 }}
               >
-                {convertFractionsToLatex(questionData.question_text || "")}
+                {renderLatex(convertFractionsToLatex(questionData.question_text || ""))}
               </div>
             </div>
           )}
 
-          {/* Question Prompt (if different) */}
-          {questionData.question_prompt &&
-            questionData.question_prompt !== questionData.question_text && (
-              <div
-                style={{
-                  backgroundColor: "#dbeafe",
-                  padding: "1rem",
-                  borderRadius: "0.5rem",
-                  marginBottom: "1.5rem",
-                  border: "1px solid #3b82f6",
-                }}
-              >
+          {/* NEW FORMAT: Previous Rounds with full context */}
+          {previousRoundsData && previousRoundsData.length > 0 && (
+            <div style={{ marginBottom: "1.5rem" }}>
+              <div style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "0.5rem",
+                marginBottom: "1rem"
+              }}>
                 <h3
                   style={{
-                    fontSize: "0.875rem",
-                    fontWeight: "600",
-                    color: "#1e40af",
-                    marginBottom: "0.5rem",
-                  }}
-                >
-                  Full Prompt:
-                </h3>
-                <div
-                  style={{
-                    fontSize: "0.875rem",
-                    color: "#1f2937",
-                    lineHeight: "1.5",
-                    whiteSpace: "pre-wrap",
-                  }}
-                >
-                  {convertFractionsToLatex(questionData.question_prompt || "")}
-                </div>
-              </div>
-            )}
-
-          {/* Previous Responses */}
-          {questionData.previous_responses &&
-            questionData.previous_responses.length > 0 && (
-              <div style={{ marginBottom: "1.5rem" }}>
-                <h3
-                  style={{
-                    fontSize: "0.875rem",
+                    fontSize: "1rem",
                     fontWeight: "600",
                     color: "#374151",
-                    marginBottom: "0.75rem",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "0.5rem",
+                    margin: 0,
                   }}
                 >
-                  <Bot size={16} />
-                  AI Agent Responses ({questionData.previous_responses.length}):
+                  Previous Round Responses
                 </h3>
-                <div
-                  style={{
-                    maxHeight: "300px",
-                    overflowY: "auto",
-                    border: "1px solid #e5e7eb",
-                    borderRadius: "0.5rem",
-                    backgroundColor: "#fafafa",
-                  }}
-                >
-                  {questionData.previous_responses.map((resp, idx) => {
-                    const parsed = parseResponse(resp);
-                    return (
-                      <div
-                        key={idx}
-                        style={{
-                          padding: "0.875rem",
-                          marginBottom:
-                            idx < questionData.previous_responses!.length - 1
-                              ? "0"
-                              : 0,
-                          borderBottom:
-                            idx < questionData.previous_responses!.length - 1
-                              ? "1px solid #e5e7eb"
-                              : "none",
-                          backgroundColor: idx % 2 === 0 ? "white" : "#fafafa",
-                        }}
-                      >
-                        <div
-                          style={{
-                            fontSize: "0.75rem",
-                            color: "#6b7280",
-                            marginBottom: "0.5rem",
-                            fontWeight: "600",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "0.5rem",
-                          }}
-                        >
-                          <Bot size={14} />
-                          <span style={{ color: "#2563eb" }}>
-                            {parsed.agentName}
-                          </span>
-                          {parsed.prefix && (
-                            <span
+                <span style={{
+                  fontSize: "0.75rem",
+                  backgroundColor: "#dbeafe",
+                  color: "#1e40af",
+                  padding: "0.25rem 0.5rem",
+                  borderRadius: "9999px",
+                  fontWeight: "500",
+                }}>
+                  {previousRoundsData.length} round{previousRoundsData.length > 1 ? 's' : ''}
+                </span>
+              </div>
+
+              {questionData.replace_agent_name && (
+                <div style={{
+                  fontSize: "0.75rem",
+                  color: "#6b7280",
+                  marginBottom: "0.75rem",
+                  padding: "0.5rem",
+                  backgroundColor: "#f3f4f6",
+                  borderRadius: "0.375rem",
+                  borderLeft: "3px solid #3b82f6",
+                }}>
+                  💡 You're taking over from <strong>{questionData.replace_agent_name}</strong>. Review their previous arguments below.
+                </div>
+              )}
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                {previousRoundsData.map(([roundKey, responses]) => {
+                  const roundNum = parseInt(roundKey.split('_')[1]);
+                  
+                  return (
+                    <div
+                      key={roundKey}
+                      style={{
+                        marginBottom: "1rem",
+                        border: "1px solid #e5e7eb",
+                        borderRadius: "0.5rem",
+                        overflow: "hidden",
+                        borderLeft: "4px solid #3b82f6",
+                      }}
+                    >
+                      <div style={{
+                        backgroundColor: "#f9fafb",
+                        padding: "0.75rem 1rem",
+                        borderBottom: "1px solid #e5e7eb",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                      }}>
+                        <h4 style={{
+                          fontSize: "0.875rem",
+                          fontWeight: "600",
+                          color: "#111827",
+                          margin: 0,
+                        }}>
+                          Round {roundNum}
+                        </h4>
+                        <span style={{
+                          fontSize: "0.75rem",
+                          color: "#6b7280",
+                        }}>
+                          {Object.keys(responses).length} agent{Object.keys(responses).length > 1 ? 's' : ''}
+                        </span>
+                      </div>
+
+                      <div style={{ backgroundColor: "white" }}>
+                        {Object.entries(responses).map(([agentName, response], idx) => {
+                          const isYourPrevious = isReplacedAgent(agentName);
+                          
+                          return (
+                            <div
+                              key={agentName}
                               style={{
-                                backgroundColor: "#dbeafe",
-                                padding: "0.125rem 0.5rem",
-                                borderRadius: "9999px",
-                                fontSize: "0.6875rem",
+                                padding: "1rem",
+                                borderBottom: idx < Object.keys(responses).length - 1 ? "1px solid #f3f4f6" : "none",
+                                backgroundColor: isYourPrevious ? "#eff6ff" : "white",
                               }}
                             >
-                              {parsed.prefix.replace(/[\[\]]/g, "")}
-                            </span>
-                          )}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: "0.875rem",
-                            color: "#111827",
-                            lineHeight: "1.6",
-                            whiteSpace: "pre-wrap",
-                            paddingLeft: "1.5rem",
-                          }}
-                        >
-                          {renderLatex(parsed.response)}
-                        </div>
+                              <div style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "0.5rem",
+                                marginBottom: "0.5rem",
+                              }}>
+                                <Bot size={14} style={{ color: isYourPrevious ? "#2563eb" : "#6b7280" }} />
+                                <span style={{
+                                  fontSize: "0.8125rem",
+                                  fontWeight: "600",
+                                  color: isYourPrevious ? "#1e40af" : "#374151",
+                                }}>
+                                  {formatAgentName(agentName)}
+                                </span>
+                                {isYourPrevious && (
+                                  <span style={{
+                                    fontSize: "0.6875rem",
+                                    backgroundColor: "#2563eb",
+                                    color: "white",
+                                    padding: "0.125rem 0.5rem",
+                                    borderRadius: "9999px",
+                                    fontWeight: "500",
+                                  }}>
+                                    Your previous response
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{
+                                fontSize: "0.875rem",
+                                color: "#111827",
+                                lineHeight: "1.6",
+                                whiteSpace: "pre-wrap",
+                                paddingLeft: "1.25rem",
+                              }}>
+                                {renderLatex(response)}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    );
-                  })}
-                </div>
+                    </div>
+                  );
+                })}
               </div>
-            )}
+            </div>
+          )}
+
+          {/* OLD FORMAT: Fallback for previous_responses array (backwards compatibility) */}
+          {!previousRoundsData && questionData.previous_responses && questionData.previous_responses.length > 0 && (
+            <div style={{ marginBottom: "1.5rem" }}>
+              <h3
+                style={{
+                  fontSize: "0.875rem",
+                  fontWeight: "600",
+                  color: "#374151",
+                  marginBottom: "0.75rem",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.5rem",
+                }}
+              >
+                <Bot size={16} />
+                AI Agent Responses ({questionData.previous_responses.length}):
+              </h3>
+              <div
+                style={{
+                  maxHeight: "300px",
+                  overflowY: "auto",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: "0.5rem",
+                  backgroundColor: "#fafafa",
+                }}
+              >
+                {questionData.previous_responses.map((resp, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      padding: "0.875rem",
+                      borderBottom: idx < questionData.previous_responses!.length - 1 ? "1px solid #e5e7eb" : "none",
+                      backgroundColor: idx % 2 === 0 ? "white" : "#fafafa",
+                    }}
+                  >
+                    <div style={{
+                      fontSize: "0.875rem",
+                      color: "#111827",
+                      lineHeight: "1.6",
+                      whiteSpace: "pre-wrap",
+                    }}>
+                      {renderLatex(resp)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Response Input */}
           <div style={{ marginBottom: "1rem" }}>
@@ -448,7 +555,7 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
             <textarea
               value={responseText}
               onChange={(e) => setResponseText(e.target.value)}
-              placeholder="Enter your reasoning and response here."
+              placeholder="Enter your reasoning and response here. Consider the previous round responses above when crafting your answer."
               rows={8}
               style={{
                 width: "100%",
@@ -464,13 +571,6 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
               onFocus={(e) => (e.target.style.borderColor = "#667eea")}
               onBlur={(e) => (e.target.style.borderColor = "#d1d5db")}
             />
-            <p
-              style={{
-                fontSize: "0.75rem",
-                color: "#6b7280",
-                marginTop: "0.25rem",
-              }}
-            ></p>
           </div>
 
           {/* Extracted Answer Input */}
@@ -490,6 +590,7 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
               type="text"
               value={extractedAnswer}
               onChange={(e) => setExtractedAnswer(e.target.value)}
+              placeholder='e.g., "10" or "A"'
               style={{
                 width: "100%",
                 padding: "0.75rem",

@@ -300,7 +300,9 @@ const Dashboard = () => {
   const handleNewExperiment = () => {
     router.push(`/debate/new`);
   };
-
+  const handleDebugger = () => {
+    router.push(`/debate/debug`);
+  };
   const handleViewExperiment = (experiment: Experiment) => {
     router.push(`/debate/${experiment.id}?seed=${experiment.selectedSeed}`);
   };
@@ -363,6 +365,14 @@ const Dashboard = () => {
                 buttonStyle="primary"
                 onClick={handleNewExperiment}
                 label="New Experiment"
+                icon={Plus}
+                size="md"
+                iconColor="white"
+              ></Button>
+              <Button
+                buttonStyle="secondary"
+                onClick={handleDebugger}
+                label="Re-run with Human"
                 icon={Plus}
                 size="md"
                 iconColor="white"

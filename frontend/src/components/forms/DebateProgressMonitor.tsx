@@ -36,6 +36,8 @@ interface DebateData {
   agents: Agent[];
   selectedDatasets: string[];
   customQuestions: string[];
+  isReplay?: boolean;
+  existingDebateId?: string;
 }
 
 interface DebateInstance {
@@ -54,6 +56,7 @@ interface DebateInstance {
   ws: WebSocket | null;
   humanInputData: any;
   showHumanInput: boolean;
+  questionsForThisDataset?: number;
 }
 
 interface ProgressMessage {
@@ -90,6 +93,8 @@ const DebateProgressMonitor = ({
       customQuestions: debateData.customQuestions,
       selectedDatasets: debateData.selectedDatasets,
       seeds: debateData.seeds,
+      isReplay: debateData.isReplay,
+      existingDebateId: debateData.existingDebateId,
     });
     if (!hasInitializedOnceRef.current) {
       hasInitializedOnceRef.current = true;
@@ -143,24 +148,62 @@ const DebateProgressMonitor = ({
   };
 
   const initializeDebates = async () => {
+    if (debateData.isReplay && debateData.existingDebateId) {
+      console.log("Monitoring existing replay debate:", debateData.existingDebateId);
+      
+      const instances: DebateInstance[] = [{
+        id: debateData.existingDebateId,
+        dataset: debateData.selectedDatasets?.[0] || "replay",
+        datasets: debateData.selectedDatasets || ["replay"],
+        seed: debateData.seeds?.[0] || 0,
+        status: "idle",
+        progress: 0,
+        currentQuestion: 0,
+        currentQuestionText: "",
+        currentRound: 0,
+        logs: [],
+        error: null,
+        expanded: false,
+        ws: null,
+        humanInputData: null,
+        showHumanInput: false,
+        questionsForThisDataset: debateData.totalQuestions,
+      }];
+      
+      setDebates(instances);
+      addLog(`Monitoring replay debate ${debateData.existingDebateId.substring(0, 8)}`);
+      
+      await new Promise((resolve) => setTimeout(resolve, 0));      
+      connectWebSocket(0, debateData.existingDebateId);
+      await waitForCompletion(0);
+      return;
+    }
+
+    // Original logic for non-replay debates
     const instances: DebateInstance[] = [];
-    console.log("🔍 Debug initializeDebates:");
+    console.log("Debug initializeDebates:");
     console.log("  - selectedDatasets:", debateData.selectedDatasets);
     console.log("  - customQuestions:", debateData.customQuestions);
+    console.log("  - totalQuestions:", debateData.totalQuestions);
 
     const hasCustomQuestions = (debateData.customQuestions || []).length > 0;
-
-    // Run custom questions if they exist (regardless of selectedDatasets)
+    const numCustomQuestions = hasCustomQuestions ? debateData.customQuestions.length : 0;
     const shouldRunCustomQuestions = hasCustomQuestions;
-
     const datasetsToRun =
       debateData.selectedDatasets?.filter((d) => d !== "custom_questions") ||
       [];
+    const questionsForDatasets = debateData.totalQuestions - numCustomQuestions;
+    const questionsPerDataset = datasetsToRun.length > 0 
+      ? Math.ceil(questionsForDatasets / datasetsToRun.length)
+      : 0;
 
-    console.log("Final datasets to run:", datasetsToRun);
-    console.log("Will run custom questions:", shouldRunCustomQuestions);
+    console.log("Question distribution:");
+    console.log("  - Total questions:", debateData.totalQuestions);
+    console.log("  - Custom questions:", numCustomQuestions);
+    console.log("  - Questions for datasets:", questionsForDatasets);
+    console.log("  - Datasets to run:", datasetsToRun);
+    console.log("  - Questions per dataset:", questionsPerDataset);
 
-    // Process regular datasets
     datasetsToRun.forEach((dataset) => {
       debateData.seeds.forEach((seed) => {
         instances.push({
@@ -179,6 +222,7 @@ const DebateProgressMonitor = ({
           ws: null,
           humanInputData: null,
           showHumanInput: false,
+          questionsForThisDataset: questionsPerDataset,
         });
       });
     });
@@ -201,11 +245,12 @@ const DebateProgressMonitor = ({
           ws: null,
           humanInputData: null,
           showHumanInput: false,
+          questionsForThisDataset: numCustomQuestions,
         });
       });
       console.log(
         "Added custom_questions instances:",
-        debateData.customQuestions.length
+        numCustomQuestions
       );
     }
 
@@ -217,122 +262,170 @@ const DebateProgressMonitor = ({
     );
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-
-    for (let i = 0; i < instances.length; i++) {
-      if (!isMountedRef.current) break;
-      await startDebateWithInstance(instances[i], i);
-      await waitForCompletion(i);
-    }
+    await startDebateInstances();
   };
 
-  const startDebateWithInstance = async (
-    debate: DebateInstance,
-    index: number
-  ) => {
-    updateDebate(index, { status: "starting" });
-    addLog(`Starting ${debate.dataset} (seed: ${debate.seed})`, index);
+  const startDebateInstances = async () => {
+    console.log("Replay Params:", debateData?.isReplay, debateData?.existingDebateId);
+    if (debateData.isReplay && debateData.existingDebateId) {
+      console.log("Skipping startDebateInstances - this is a replay");
+      return;
+    }
+    
+    const instances: DebateInstance[] = [];
+    console.log("Debug startDebateInstances:");
+    console.log("  - selectedDatasets:", debateData.selectedDatasets);
+    console.log("  - customQuestions:", debateData.customQuestions);
+    console.log("  - totalQuestions:", debateData.totalQuestions);
 
-    try {
-      const isCustomQuestions = debate.datasets?.includes("custom_questions");
-      const agentModels =
-        debateData.agents?.filter((a) => a.enabled)?.map((a) => a.model) || [];
+    const hasCustomQuestions = (debateData.customQuestions || []).length > 0;
+    const numCustomQuestions = hasCustomQuestions ? debateData.customQuestions.length : 0;
+    const shouldRunCustomQuestions = hasCustomQuestions;
+    const datasetsToRun = debateData.selectedDatasets?.filter((d) => d !== "custom_questions") || [];
+    const questionsForDatasets = debateData.totalQuestions - numCustomQuestions;
+    const questionsPerDataset =
+      datasetsToRun.length > 0 ? Math.ceil(questionsForDatasets / datasetsToRun.length) : 0;
 
-      console.log("🤖 Agent extraction:", {
-        rawAgents: debateData.agents,
-        enabledAgents: debateData.agents?.filter((a) => a.enabled),
-        agentModels: agentModels,
+    console.log("Question distribution:");
+    console.log("  - Total questions:", debateData.totalQuestions);
+    console.log("  - Custom questions:", numCustomQuestions);
+    console.log("  - Questions for datasets:", questionsForDatasets);
+    console.log("  - Datasets to run:", datasetsToRun);
+    console.log("  - Questions per dataset:", questionsPerDataset);
+
+    // Create debate instances for datasets
+    datasetsToRun.forEach((dataset) => {
+      debateData.seeds.forEach((seed) => {
+        instances.push({
+          id: "",
+          dataset,
+          datasets: [dataset],
+          seed,
+          status: "idle",
+          progress: 0,
+          currentQuestion: 0,
+          currentQuestionText: "",
+          currentRound: 0,
+          logs: [],
+          error: null,
+          expanded: false,
+          ws: null,
+          humanInputData: null,
+          showHumanInput: false,
+          questionsForThisDataset: questionsPerDataset,
+        });
       });
+    });
 
-      // Validate we have at least one agent
-      if (agentModels.length === 0) {
-        throw new Error(
-          "At least 1 agent is required. Please enable at least one agent."
-        );
-      }
-      console.log("🔍 Debug agent data:", {
-        hasDebateData: !!debateData,
-        hasAgents: !!debateData?.agents,
-        agentsIsArray: Array.isArray(debateData?.agents),
-        agentsLength: debateData?.agents?.length,
-        rawAgents: debateData?.agents,
-        firstAgent: debateData?.agents?.[0],
-        enabledAgentsCount: debateData?.agents?.filter((a) => a.enabled)
-          ?.length,
+    // Add custom question debates if any
+    if (shouldRunCustomQuestions) {
+      debateData.seeds.forEach((seed) => {
+        instances.push({
+          id: "",
+          dataset: "custom_questions",
+          datasets: ["custom_questions"],
+          seed,
+          status: "idle",
+          progress: 0,
+          currentQuestion: 0,
+          currentQuestionText: "",
+          currentRound: 0,
+          logs: [],
+          error: null,
+          expanded: false,
+          ws: null,
+          humanInputData: null,
+          showHumanInput: false,
+          questionsForThisDataset: numCustomQuestions,
+        });
       });
+      console.log("Added custom_questions instances:", numCustomQuestions);
+    }
 
-      // Check if agents exist and are enabled
-      if (!debateData?.agents || debateData.agents.length === 0) {
-        throw new Error("No agents configured. Please add at least one agent.");
+    // Store initialized debates in state
+    setDebates(instances);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Start each debate sequentially
+    for (let i = 0; i < instances.length; i++) {
+      if (!isMountedRef.current) break;
+
+      const debate = instances[i];
+      updateDebate(i, { status: "starting" });
+      addLog(`Starting ${debate.dataset} (seed: ${debate.seed})`, i);
+
+      try {
+        const isCustomQuestions = debate.datasets?.includes("custom_questions");
+        const agentModels =
+          debateData.agents?.filter((a) => a.enabled)?.map((a) => a.model) || [];
+
+        console.log("Agent extraction:", {
+          rawAgents: debateData.agents,
+          enabledAgents: debateData.agents?.filter((a) => a.enabled),
+          agentModels,
+        });
+
+        if (agentModels.length === 0) {
+          throw new Error("At least 1 agent is required. Please enable at least one agent.");
+        }
+
+        const humanAgentIndex = agentModels.findIndex((model) => model === "human-participant");
+        const numQuestionsForThisInstance =
+          debate.questionsForThisDataset || debateData.totalQuestions;
+
+        const payload: any = {
+          debate_type: "basic_debate",
+          task: isCustomQuestions ? "custom" : debate.dataset || "mmlu",
+          num_questions: numQuestionsForThisInstance,
+          num_rounds: debateData.numRounds,
+          agent_models: agentModels,
+          human_agent_index: humanAgentIndex >= 0 ? humanAgentIndex : null,
+          seed: debate.seed,
+          name: debateData.experimentName,
+          summarize: true,
+          selectedDatasets: debate.datasets || [debate.dataset],
+          custom_questions: isCustomQuestions ? debateData.customQuestions : undefined,
+        };
+
+
+        Object.keys(payload).forEach((key) => payload[key] === undefined && delete payload[key]);
+
+        console.log("Sending debate request:", {
+          endpoint: "/api/new-debate",
+          task: payload.task,
+          seed: payload.seed,
+          selectedDatasets: payload.selectedDatasets,
+          hasCustomQuestions: !!payload.custom_questions?.length,
+          numCustomQuestions: payload.custom_questions?.length || 0,
+          customQuestionsPreview: payload.custom_questions?.[0],
+          agentModels: payload.agent_models,
+          numAgents: payload.agent_models.length,
+          numQuestions: payload.num_questions,
+        });
+
+        const response = await fetch("/api/new-debate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        const result = await response.json();
+
+        if (!result.success || !result.debate_id) {
+          throw new Error(result.message || "Failed to start debate");
+        }
+
+        updateDebate(i, { id: result.debate_id });
+        addLog(`Created debate ${result.debate_id.substring(0, 8)}`, i);
+        addLog("Connecting WebSocket...", i);
+
+        connectWebSocket(i, result.debate_id);
+        await waitForCompletion(i);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        updateDebate(i, { status: "error", error: message });
+        addLog(`Error: ${message}`, i);
       }
-
-      const enabledAgents = debateData.agents.filter((a) => a.enabled);
-      if (enabledAgents.length === 0) {
-        throw new Error("No agents enabled. Please enable at least one agent.");
-      }
-      const humanAgentIndex = agentModels.findIndex(
-        (model) => model === "human-participant"
-      );
-      const payload: any = {
-        debate_type: "basic_debate",
-        task: isCustomQuestions ? "custom" : debate.dataset || "mmlu",
-        num_questions: debateData.totalQuestions,
-        num_rounds: debateData.numRounds,
-        agent_models: agentModels,
-        human_agent_index: humanAgentIndex >= 0 ? humanAgentIndex : null,
-        seed: debate.seed,
-        name: debateData.experimentName,
-        summarize: true,
-        selectedDatasets: debate.datasets || [debate.dataset],
-        custom_questions: isCustomQuestions
-          ? debateData.customQuestions
-          : undefined,
-      };
-
-      if (
-        isCustomQuestions &&
-        !payload.selectedDatasets.includes("custom_questions")
-      ) {
-        payload.selectedDatasets = ["custom_questions"];
-      }
-
-      // Remove undefined fields
-      Object.keys(payload).forEach(
-        (key) => payload[key] === undefined && delete payload[key]
-      );
-
-      console.log("📤 Sending debate request:", {
-        endpoint: "/api/new-debate",
-        task: payload.task,
-        seed: payload.seed,
-        selectedDatasets: payload.selectedDatasets,
-        hasCustomQuestions: !!payload.custom_questions?.length,
-        numCustomQuestions: payload.custom_questions?.length || 0,
-        customQuestionsPreview: payload.custom_questions?.[0],
-        agentModels: payload.agent_models,
-        numAgents: payload.agent_models.length,
-      });
-
-      const response = await fetch("/api/new-debate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const result = await response.json();
-
-      if (!result.success || !result.debate_id) {
-        throw new Error(result.message || "Failed to start debate");
-      }
-
-      updateDebate(index, { id: result.debate_id });
-      addLog(`Created debate ${result.debate_id.substring(0, 8)}`, index);
-
-      addLog("Connecting WebSocket...", index);
-      connectWebSocket(index, result.debate_id);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
-      updateDebate(index, { status: "error", error: message });
-      addLog(`Error: ${message}`, index);
     }
   };
 
@@ -348,6 +441,7 @@ const DebateProgressMonitor = ({
     let ws: WebSocket;
     let shouldReconnect = true;
     let pingInterval: NodeJS.Timeout;
+    let hasSeenConnected = false;
 
     const initWebSocket = () => {
       try {
@@ -363,14 +457,47 @@ const DebateProgressMonitor = ({
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: "ping" }));
             }
-          }, 30000);
+          }, 30000);          
         };
 
         ws.onmessage = (event) => {
           try {
             const message: ProgressMessage = JSON.parse(event.data);
-            console.log("📨 WS Message:", message.type, message);
-
+            console.log("WS Message:", message.type, message);
+            if (message.type === "connected" && !hasSeenConnected) {
+              hasSeenConnected = true;              
+              const hasHumanAgent = debateData.agents?.some(
+                agent => agent.enabled && agent.model === "human-participant"
+              );
+              console.log("Has human agent:", hasHumanAgent, "| Is replay:", debateData.isReplay);
+              if (hasHumanAgent || debateData.isReplay) {
+                setTimeout(async () => {
+                  try {
+                    console.log("Sending human-ready signal for debate:", debateId);
+                    const response = await fetch(`/api/debate/${debateId}/human-ready`, {
+                      method: "POST",
+                      headers: {
+                        "Content-Type": "application/json",
+                      },
+                    });
+                    
+                    if (response.ok) {
+                      console.log("Ready signal sent successfully");
+                      addLog("Ready signal sent", index);
+                    } else {
+                      console.error("Failed to send ready signal:", response.status);
+                      addLog("Failed to send ready signal", index);
+                    }
+                  } catch (err) {
+                    console.error("Error sending human-ready signal:", err);
+                    addLog(`Error sending ready signal: ${err}`, index);
+                  }
+                }, 500);
+              } else {
+                const reason = debateData.isReplay ? "replay mode" : "no human agent";
+                console.log(`Skipping ready signal - ${reason}`);
+              }
+            }
             if (
               ["debate_completed", "debate_error", "debate_cancelled"].includes(
                 message.type
@@ -379,14 +506,15 @@ const DebateProgressMonitor = ({
               shouldReconnect = false;
               clearInterval(pingInterval);
             }
-
             handleMessage(index, message, debateId);
           } catch (err) {
             console.error("Failed to parse WS message:", err, event.data);
           }
         };
 
-        ws.onerror = (err) => {};
+        ws.onerror = (err) => {
+          console.error("WebSocket error:", err);
+        };
 
         ws.onclose = (event) => {
           clearInterval(pingInterval);
@@ -405,7 +533,6 @@ const DebateProgressMonitor = ({
 
     initWebSocket();
   };
-
   const handleMessage = (
     index: number,
     msg: ProgressMessage,
@@ -416,7 +543,10 @@ const DebateProgressMonitor = ({
         updateDebate(index, { status: "running" });
         addLog("Debate started", index);
         break;
-
+      
+      case "connected":
+        addLog("WebSocket connection confirmed", index);
+        break;
       case "question_started":
         const qNum = (msg.data?.question_index || 0) + 1;
         const questionText =
@@ -425,30 +555,31 @@ const DebateProgressMonitor = ({
           currentQuestion: qNum,
           currentQuestionText: questionText,
         });
-        addLog(`Question ${qNum}/${debateData.totalQuestions} started`, index);
+        
+        const totalForThisDebate = debates[index]?.questionsForThisDataset || debateData.totalQuestions;
+        addLog(`Question ${qNum}/${totalForThisDebate} started`, index);
         break;
 
       case "round_completed":
         const roundNum = (msg.data?.round_number || 0) + 1;
-        addLog(`Round ${roundNum} completed`, index);
-
+        
         setDebates((prev) => {
           const debate = prev[index];
-          const currentQ =
-            msg.data?.question_index !== undefined
-              ? msg.data.question_index + 1
-              : debate.currentQuestion;
+          
+          const actualQuestionIndex = msg.data?.question_index ?? debate.currentQuestion - 1;
+          const currentQ = actualQuestionIndex + 1;
 
           const isLastRound = roundNum >= debateData.numRounds;
-          const isLastQuestion = currentQ >= debateData.totalQuestions;
           const questionsCompleted = isLastRound ? currentQ : currentQ - 1;
+          
+          const totalQuestionsForThisDebate = debate.questionsForThisDataset || debateData.totalQuestions;
           const progress = Math.min(
             100,
-            (questionsCompleted / debateData.totalQuestions) * 100
+            (questionsCompleted / totalQuestionsForThisDebate) * 100
           );
           return [
             ...prev.slice(0, index),
-            { ...debate, progress },
+            { ...debate, currentRound: roundNum, progress },
             ...prev.slice(index + 1),
           ];
         });
@@ -472,7 +603,7 @@ const DebateProgressMonitor = ({
         const previousResponses = Object.entries(otherResponses).map(
           ([agentName, response]) => `${agentName}: ${response}`
         );
-
+        
         console.log("waiting_for_human data:", msg.data);
 
         updateDebate(index, {
@@ -496,8 +627,9 @@ const DebateProgressMonitor = ({
             ? msg.data.question_index + 1
             : debates[index]?.currentQuestion || 0;
 
+        const totalQuestionsForInstance = debates[index]?.questionsForThisDataset || debateData.totalQuestions;
         const isLastQuestionComplete =
-          questionComplete && questionIndex >= debateData.totalQuestions;
+          questionComplete && questionIndex >= totalQuestionsForInstance;
 
         if (isFullyComplete || isLastQuestionComplete) {
           const finalId = msg.debate_id || debateId || debates[index]?.id;
@@ -515,7 +647,7 @@ const DebateProgressMonitor = ({
         } else if (questionComplete) {
           const progress = Math.min(
             100,
-            (questionIndex / debateData.totalQuestions) * 100
+            (questionIndex / totalQuestionsForInstance) * 100
           );
           updateDebate(index, { progress });
           addLog(`Question ${questionIndex} completed`, index);
@@ -534,7 +666,11 @@ const DebateProgressMonitor = ({
           debates[index].ws.close();
         }
         break;
-
+      
+      case "waiting_for_human_connection":
+        updateDebate(index, { status: "running" });
+        addLog("Waiting for human connection to proceed...", index);
+        break;
       case "debate_error":
       case "error":
         const errorMsg = msg.message || msg.data?.error || "Unknown error";
@@ -566,7 +702,7 @@ const DebateProgressMonitor = ({
       }, 600000);
     });
   };
-
+  
   const fetchDebateResults = async (index: number, debateId: string) => {
     if (!debateId) {
       addLog("Cannot fetch results - no debate ID", index);
@@ -632,8 +768,6 @@ const DebateProgressMonitor = ({
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       addLog(`Error submitting human response: ${message}`, index);
-
-      alert(`Failed to submit response: ${message}\nPlease try again.`);
     }
   };
 
@@ -799,7 +933,7 @@ const DebateProgressMonitor = ({
                     </div>
                     <div style={{ fontSize: "0.875rem", color: "#6b7280" }}>
                       {debate.status === "running" &&
-                        `Question ${debate.currentQuestion}/${debateData.totalQuestions}, Round ${debate.currentRound}/${debateData.numRounds}`}
+                        `Question ${debate.currentQuestion}/${debate.questionsForThisDataset || debateData.totalQuestions}, Round ${debate.currentRound}/${debateData.numRounds}`}
                       {debate.status === "completed" &&
                         "Completed successfully"}
                       {debate.status === "error" && `Error: ${debate.error}`}

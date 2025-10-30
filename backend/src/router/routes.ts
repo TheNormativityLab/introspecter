@@ -13,6 +13,7 @@ export enum debateRoutes {
   getStatus = "/:debateId/status",
   cancelDebate = "/:debateId/cancel",
   humanResponse = "/:debateId/human-response",
+  humanReady = "/:debateId/human-ready",
   getQuestionDetails = "/:debateId/question/:questionIndex",
 }
 

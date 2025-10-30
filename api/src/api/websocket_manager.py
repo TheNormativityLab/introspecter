@@ -117,8 +117,15 @@ class WebSocketManager:
         self.channel = None
         logger.info("WebSocket manager shutdown complete")
     
-    async def connect(self, websocket: WebSocket, debate_id: str):
-        """Register a new WebSocket connection and start consuming events."""
+    async def connect(self, websocket: WebSocket, debate_id: str, consumer_ready_event: asyncio.Event = None):
+        """
+        Register a new WebSocket connection and start consuming events.
+        
+        Args:
+            websocket: The WebSocket connection
+            debate_id: The debate ID
+            consumer_ready_event: Optional event to signal when consumer is ready
+        """
         if self._closing:
             logger.warning(f"Cannot connect WebSocket for {debate_id} - manager is closing")
             await websocket.close()
@@ -127,18 +134,137 @@ class WebSocketManager:
         if debate_id in self.consumer_tasks:
             logger.warning(f"Cleaning up existing consumer for debate {debate_id}")
             await self._cleanup_consumer(debate_id)
-            
-        await websocket.accept()
+        
+        # Store the connection
         self.active_connections[debate_id] = websocket
         
+        # Start consumer task with ready signal
         consumer_task = asyncio.create_task(
-            self._consume_debate_events(debate_id, websocket),
+            self._consume_debate_events(debate_id, websocket, consumer_ready_event),
             name=f"consumer_{debate_id}"
         )
         self.consumer_tasks[debate_id] = consumer_task
         
-        logger.info(f"WebSocket connected for debate {debate_id}, consumer started")
-    
+        logger.info(f"WebSocket connected for debate {debate_id}, consumer starting")
+
+
+    async def _consume_debate_events(
+        self, 
+        debate_id: str, 
+        websocket: WebSocket,
+        consumer_ready_event: asyncio.Event = None
+    ):
+        """
+        Consume events from RabbitMQ for a specific debate and forward to WebSocket.
+        
+        Args:
+            debate_id: The debate ID
+            websocket: The WebSocket connection
+            consumer_ready_event: Event to signal when consumer is fully initialized
+        """
+        queue = None
+        queue_name = f'ws_events_{debate_id}'
+        consumer_tag = f'ws_consumer_{debate_id}_{uuid.uuid4().hex[:8]}'
+        
+        logger.info(f"Starting consumer for debate {debate_id} with tag: {consumer_tag}")
+        
+        try:
+            await self.initialize()
+            
+            self.active_consumers[debate_id] = consumer_tag
+            
+            # Declare queue with proper settings
+            queue = await self.channel.declare_queue(
+                queue_name,
+                durable=True,
+                auto_delete=False, 
+                exclusive=False,
+                arguments={
+                    'x-message-ttl': 300000,  # 5 minutes (increased from 60s)
+                    'x-expires': 600000       # 10 minutes (increased from 120s)
+                }
+            )
+            
+            self.queues_to_cleanup.add(queue_name)
+            
+            # Bind to exchange
+            routing_key = f'debate.events.{debate_id}'
+            await queue.bind(self.debate_exchange, routing_key=routing_key)
+            
+            logger.info(f"Queue {queue_name} declared and bound for debate {debate_id}")
+            
+            # CRITICAL: Signal that consumer is ready BEFORE starting to iterate
+            if consumer_ready_event:
+                consumer_ready_event.set()
+                logger.info(f"Consumer ready signal sent for debate {debate_id}")
+            
+            # Now start consuming messages
+            async with queue.iterator(consumer_tag=consumer_tag) as queue_iter:
+                async for message in queue_iter:
+                    if self._closing:
+                        logger.info(f"Stopping consumer for debate {debate_id} - manager closing")
+                        break
+                        
+                    async with message.process():
+                        try:
+                            event_data = json.loads(message.body.decode())
+                            event_type = event_data.get('type', 'unknown')
+                            
+                            if debate_id not in self.active_connections:
+                                logger.info(f"WebSocket disconnected for {debate_id}, stopping consumer")
+                                break
+                            
+                            await websocket.send_json(event_data)
+                            
+                            logger.info(f"Forwarded {event_type} event to WebSocket for debate {debate_id}")
+                            
+                            if event_type in ['debate_completed', 'debate_failed', 'debate_cancelled']:
+                                logger.info(f"Debate {debate_id} ended ({event_type}), stopping consumer")
+                                break
+                                
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to decode event message: {e}")
+                        except Exception as e:
+                            logger.error(f"Error forwarding event: {e}", exc_info=True)
+                            break
+                            
+        except asyncio.CancelledError:
+            logger.info(f"Event consumer cancelled for debate {debate_id} (tag: {consumer_tag})")
+            raise
+        except Exception as e:
+            logger.error(f"Error in event consumer for debate {debate_id}: {e}", exc_info=True)
+            
+            # Signal error if we failed before signaling ready
+            if consumer_ready_event and not consumer_ready_event.is_set():
+                consumer_ready_event.set()
+            
+            try:
+                if debate_id in self.active_connections:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Consumer error: {str(e)}"
+                    })
+            except:
+                pass
+        finally:
+            if debate_id in self.active_consumers:
+                del self.active_consumers[debate_id]
+            
+            if self.channel and not self.channel.is_closed:
+                try:
+                    if queue:
+                        await queue.cancel(consumer_tag)
+                        logger.debug(f"Cancelled consumer {consumer_tag}")
+                except Exception as e:
+                    logger.debug(f"Consumer cancel: {e}")
+                
+                try:
+                    await self.channel.queue_delete(queue_name, if_empty=False, if_unused=False)
+                    self.queues_to_cleanup.discard(queue_name)
+                    logger.debug(f"Cleaned up queue {queue_name} for debate {debate_id}")
+                except Exception as e:
+                    logger.debug(f"Queue cleanup: {e}")
+        
     def disconnect(self, debate_id: str):
         """Remove a WebSocket connection and stop consumer."""
         if debate_id in self.active_connections:
@@ -180,100 +306,6 @@ class WebSocketManager:
         """Get number of active WebSocket connections."""
         return len(self.active_connections)
     
-    async def _consume_debate_events(self, debate_id: str, websocket: WebSocket):
-        """
-        Consume events from RabbitMQ for a specific debate and forward to WebSocket.
-        Uses a durable queue to capture events even if they arrive before WS connects.        
-        """
-        queue = None
-        queue_name = f'ws_events_{debate_id}'
-        consumer_tag = f'ws_consumer_{debate_id}_{uuid.uuid4().hex[:8]}'
-        
-        logger.info(f"Starting consumer for debate {debate_id} with tag: {consumer_tag}")
-        
-        try:
-            await self.initialize()
-            
-            self.active_consumers[debate_id] = consumer_tag
-            
-            queue = await self.channel.declare_queue(
-                queue_name,
-                durable=True,
-                auto_delete=False, 
-                exclusive=False,  
-                arguments={
-                    'x-message-ttl': 60000, 
-                    'x-expires': 120000 
-                }
-            )
-            
-            self.queues_to_cleanup.add(queue_name)
-            
-            routing_key = f'debate.events.{debate_id}'
-            await queue.bind(self.debate_exchange, routing_key=routing_key)
-            
-            logger.info(f"Consuming from queue {queue_name} for debate {debate_id}")
-            
-            async with queue.iterator(consumer_tag=consumer_tag) as queue_iter:
-                async for message in queue_iter:
-                    if self._closing:
-                        logger.info(f"Stopping consumer for debate {debate_id} - manager closing")
-                        break
-                        
-                    async with message.process():
-                        try:
-                            event_data = json.loads(message.body.decode())
-                            event_type = event_data.get('type', 'unknown')
-                            
-                            if debate_id not in self.active_connections:
-                                logger.info(f"WebSocket disconnected for {debate_id}, stopping consumer")
-                                break
-                            
-                            await websocket.send_json(event_data)
-                            
-                            logger.info(f"Forwarded {event_type} event to WebSocket for debate {debate_id}")
-                            
-                            if event_type in ['debate_completed', 'debate_failed', 'debate_cancelled']:
-                                logger.info(f"Debate {debate_id} ended ({event_type}), stopping consumer")
-                                break
-                                
-                        except json.JSONDecodeError as e:
-                            logger.error(f"Failed to decode event message: {e}")
-                        except Exception as e:
-                            logger.error(f"Error forwarding event: {e}", exc_info=True)
-                            break
-                            
-        except asyncio.CancelledError:
-            logger.info(f"Event consumer cancelled for debate {debate_id} (tag: {consumer_tag})")
-            raise
-        except Exception as e:
-            logger.error(f"Error in event consumer for debate {debate_id}: {e}", exc_info=True)
-            try:
-                if debate_id in self.active_connections:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Consumer error: {str(e)}"
-                    })
-            except:
-                pass
-        finally:
-            if debate_id in self.active_consumers:
-                del self.active_consumers[debate_id]
-            
-            if self.channel and not self.channel.is_closed:
-                try:
-                    if queue:
-                        await queue.cancel(consumer_tag)
-                        logger.debug(f"Cancelled consumer {consumer_tag}")
-                except Exception as e:
-                    logger.debug(f"Consumer cancel: {e}")
-                
-                try:
-                    await self.channel.queue_delete(queue_name, if_empty=False, if_unused=False)
-                    self.queues_to_cleanup.discard(queue_name)
-                    logger.debug(f"Cleaned up queue {queue_name} for debate {debate_id}")
-                except Exception as e:
-                    logger.debug(f"Queue cleanup: {e}")
     
     async def store_human_response(
         self,
@@ -376,7 +408,7 @@ async def broadcast_to_debate(debate_id: str, event_data: Dict[str, Any]):
         routing_key = f'debate.events.{debate_id}'
         await debate_exchange.publish(message, routing_key=routing_key)
         
-        logger.debug(f"📤 Broadcasted {event_data.get('type')} to debate {debate_id}")
+        logger.debug(f"Broadcasted {event_data.get('type')} to debate {debate_id}")
         
     except Exception as e:
         logger.error(f"Failed to broadcast event to debate {debate_id}: {e}")

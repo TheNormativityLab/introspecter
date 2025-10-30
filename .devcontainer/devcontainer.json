@@ -17,26 +17,11 @@
   ],
   "forwardPorts": [3000, 3001, 8000, 5173, 5555, 15672, 5050, 5433, 5434],
   "portsAttributes": {
-    "3001": {
-      "label": "API",
-      "onAutoForward": "notify"
-    },
-    "3000": {
-      "label": "Frontend",
-      "onAutoForward": "notify"
-    },
-    "5555": {
-      "label": "Flower",
-      "onAutoForward": "silent"
-    },
-    "15672": {
-      "label": "RabbitMQ Management",
-      "onAutoForward": "silent"
-    },
-    "5050": {
-      "label": "pgAdmin",
-      "onAutoForward": "silent"
-    }
+    "3001": { "label": "API", "onAutoForward": "notify" },
+    "3000": { "label": "Frontend", "onAutoForward": "notify" },
+    "5555": { "label": "Flower", "onAutoForward": "silent" },
+    "15672": { "label": "RabbitMQ Management", "onAutoForward": "silent" },
+    "5050": { "label": "pgAdmin", "onAutoForward": "silent" }
   },
   "shutdownAction": "stopCompose",
   "customizations": {
@@ -72,5 +57,8 @@
   "remoteEnv": {
     "SHELL": "/usr/bin/zsh"
   },
-  "postCreateCommand": "echo '🚀 All services started! Access your code at: /workspace'"
+  "postCreateCommand": "echo '🚀 All services started! Access your code at: /workspace'",
+  "mounts": [
+    "source=${env:HOME}/.vscode-server/bin/7d842fb85a0275a4a8e4d7e040d2625abbf7f084,target=/vscode/vscode-server/bin/linux-arm64/7d842fb85a0275a4a8e4d7e040d2625abbf7f084,type=bind,consistency=cached"
+  ]
 }

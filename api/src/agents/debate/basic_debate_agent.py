@@ -138,29 +138,43 @@ class BasicDebateAgent(BaseAgent):
         """
         if not response:
             return ""
-
         import re
-
+ 
+        final_answer_patterns = [
+            r'\(X\)\s*([A-E])\)',           # (X) C)
+            r'\(X\)\s*\(([A-E])\)',         # (X) (C)
+            r'\(X\)\s*([A-E])(?:\s|$)',     # (X) C at end or followed by space
+        ]
+        
+        for pattern in final_answer_patterns:
+            final_answer_match = re.search(pattern, response, re.IGNORECASE)
+            if final_answer_match:
+                return final_answer_match.group(1).strip().upper()
+        
         boxed_match = re.search(r'\\boxed\{([^}]+)\}', response)
         if boxed_match:
             return boxed_match.group(1).strip()
-
+        
         patterns = [
+            r'(?:the )?(?:final )?answer is[:\s]+\(?([A-E])\)?',
             r'(?:the )?(?:final )?answer is[:\s]+([^\n\.]+)',
             r'(?:equals?|is|=)\s*([+-]?\d+\.?\d*)',
             r'(?:therefore|thus|so)[,\s]+(?:the answer is )?\s*([^\n\.]+)',
+            r'\(([A-E])\)\s*$',
             r'([+-]?\d+\.?\d*)\s*$',
         ]
-
+        
         for pattern in patterns:
             match = re.search(pattern, response, re.IGNORECASE)
             if match:
                 answer = match.group(1).strip()
+                # Clean up trailing punctuation
                 return answer.rstrip('.,;: ')
-
+        
         sentences = [s.strip() for s in response.split('.') if s.strip()]
         if sentences:
             return sentences[-1][:100]
+        
         return response[:100]
 
     async def add_discussion_with_other_agents_in_context(
@@ -190,8 +204,13 @@ class BasicDebateAgent(BaseAgent):
                 other_agent_responses += "\n\n One agent response: ```{}```".format(
                     agent_response
                 )
-
-        if self.domain in ["mmlu", "commonsense_qa"]:
+        
+        if "discussion_message" not in self.config.prompt_config.partials:
+            if self.domain in ["mmlu", "commonsense_qa"]:
+                payload = f"Here are the responses from other agents:\n\n{other_agent_responses}\n\nPlease consider these responses and provide your updated answer."
+            else:
+                payload = f"Question: {additional_context or ''}\n\nHere are the responses from other agents:\n\n{other_agent_responses}\n\nPlease consider these responses and provide your updated answer."
+        elif self.domain in ["mmlu", "commonsense_qa"]:
             payload = self.config.prompt_config.partials["discussion_message"].format(
                 AGENT_RESPONSES=other_agent_responses
             )
@@ -205,9 +224,7 @@ class BasicDebateAgent(BaseAgent):
                 AGENT_RESPONSES=other_agent_responses,
                 QUESTION_PROMPT=additional_context or "",
             )
-
         self.add_to_msg_history(Message(role="user", content=payload))
-
 
     def latest_response(self) -> str:
         """

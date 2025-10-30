@@ -37,14 +37,22 @@ def load_mmlu_data(file_path):
 
 
 def load_commonsense_qa_data(file_path):
-    # Convert relative path to absolute path from original working directory
+    """Load commonsense QA data from JSON or JSONL file."""
     abs_path = os.path.join(safe_get_original_cwd(), file_path)
-    with open(abs_path, "r") as json_file:
-        data = list(json_file)
-    # Load the json strings into dictionaries
-    for idx in range(len(data)):
-        data[idx] = json.loads(data[idx])
-
+    
+    with open(abs_path, "r", encoding='utf-8') as json_file:
+        content = json_file.read().strip()
+    
+    if content.startswith('['):
+        data = json.loads(content)
+    else:
+        lines = content.split('\n')
+        data = []
+        for line in lines:
+            line = line.strip()
+            if line:  # Skip empty lines
+                data.append(json.loads(line))
+    
     return data
 
 
@@ -60,13 +68,52 @@ def parse_mmlu_question_answer(df):
 
 
 def parse_commonsense_qa_question_answer(data):
-    choices = {}
-    for choice in data["question"]["choices"]:
-        choices[choice["label"]] = choice["text"]
-    question = f"Can you answer the following question as accurately as possible? {data['question']['stem']}: A) {choices['A']}, B) {choices['B']}, C) {choices['C']}, D) {choices['D']}, E) {choices['E']} Explain your answer by providing a bullet point summary of your reasoning, putting the answer in the form (X) at the end of your response."
-    answer = data["answerKey"]
+    """Parse commonsense QA question and answer from data."""
+    
+    if "question" in data and isinstance(data["question"], str):
+        question_text = data["question"]
+        choices = {}
+        for label in ["A", "B", "C", "D", "E"]:
+            if label in data:
+                choices[label] = data[label]
+        
+        question = (
+            f"Can you answer the following question as accurately as possible? "
+            f"{question_text}: "
+            f"A) {choices.get('A', 'N/A')}, "
+            f"B) {choices.get('B', 'N/A')}, "
+            f"C) {choices.get('C', 'N/A')}, "
+            f"D) {choices.get('D', 'N/A')}, "
+            f"E) {choices.get('E', 'N/A')} "
+            f"Explain your answer by providing a bullet point summary of your reasoning, "
+            f"putting the answer in the form (X) at the end of your response."
+        )
+        
+        answer = data.get("answer", "")
+        
+    elif "question" in data and isinstance(data["question"], dict):
+        choices = {}
+        for choice in data["question"]["choices"]:
+            choices[choice["label"]] = choice["text"]
+        
+        question = (
+            f"Can you answer the following question as accurately as possible? "
+            f"{data['question']['stem']}: "
+            f"A) {choices['A']}, "
+            f"B) {choices['B']}, "
+            f"C) {choices['C']}, "
+            f"D) {choices['D']}, "
+            f"E) {choices['E']} "
+            f"Explain your answer by providing a bullet point summary of your reasoning, "
+            f"putting the answer in the form (X) at the end of your response."
+        )
+        
+        answer = data["answerKey"]
+    
+    else:
+        raise ValueError(f"Unexpected commonsense QA data format: {data}")
+    
     return question, answer
-
 
 def parse_gsm8k_question_answer(data):
     question = data["question"]
@@ -246,9 +293,9 @@ def load_and_prepare_data(
         random.shuffle(questions)
     else:
         raise ValueError(f"Task domain {task_name} is not supported")
-
+    if task_name != "math" and num_questions > 0:
+        questions = questions[:num_questions]
     return questions
-
 
 def save_results(
     generated_results: List[DebateResult],

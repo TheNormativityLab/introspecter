@@ -16,18 +16,11 @@ export const replayDebate = async (
   try {
     const replayData = req.body;
 
-    logger.info("Replay request:", {
-      question_index: replayData.question_index,
-      start_from_round: replayData.start_from_round,
-      replace_agent_index: replayData.replace_agent_index,
-      previous_rounds: replayData.previous_rounds,
-      original_config: replayData.original_config,
-    });
-
+    logger.info("Replay request:", {replayData});
     const requiredFields = [
       "question_index",
       "start_from_round",
-      "replace_agent_index",
+      "replace_agent_name",
       "question_data",
       "previous_rounds",
       "original_config",
@@ -50,14 +43,6 @@ export const replayDebate = async (
       });
     }
 
-    if (replayData.replace_agent_index < 0) {
-      return res.status(400).json({
-        success: false,
-        message: "replace_agent_index must be >= 0",
-      });
-    }
-
-    // Health check FastAPI
     try {
       await axios.get(`${FASTAPI_BASE_URL}/health`, { timeout: 5000 });
     } catch (healthError) {
@@ -113,12 +98,11 @@ export const replayDebate = async (
           status: replayResult.status,
           createdAt: new Date(replayResult.created_at),
           processedAt: new Date(),
-          // Store replay metadata
           wandbMetadata: {
             is_replay: true,
             question_index: replayData.question_index,
             start_from_round: replayData.start_from_round,
-            replace_agent_index: replayData.replace_agent_index,
+            replace_agent_name: replayData.replace_agent_name,
           },
         },
       });
@@ -203,7 +187,6 @@ export const getQuestionDetails = async (
       });
     }
 
-    // Fetch question details from FastAPI
     const response = await axios.get(
       `${FASTAPI_BASE_URL}/debates/${debateId}/question/${questionIdx}`,
       {
@@ -291,7 +274,6 @@ export const getStatus = async (
       }
 
       if (response.status >= 200 && response.status < 300) {
-        // Success - return the status
         const debateData = response.data;
 
         return res.status(200).json({
@@ -314,12 +296,10 @@ export const getStatus = async (
         });
       }
 
-      // FastAPI returned an error status
       logger.warn(
         `FastAPI returned error status ${response.status} for debate ${debateId}`
       );
 
-      // Fall through to return a basic status based on what we know
     } catch (axiosError: any) {
       logger.error(`Error fetching status from FastAPI for ${debateId}:`, {
         message: axiosError.message,
@@ -362,12 +342,11 @@ export const getStatus = async (
       logger.error(`Database error checking debate ${debateId}:`, dbError);
     }
 
-    // If both FastAPI and database failed, return a safe default
     return res.status(200).json({
       success: true,
       data: {
         debate_id: debateId,
-        status: "queued", // Safe default
+        status: "queued",
         current_question: 0,
         total_questions: 0,
         created_at: new Date().toISOString(),
@@ -384,7 +363,6 @@ export const getStatus = async (
       error
     );
 
-    // Return a safe response instead of 500
     return res.status(200).json({
       success: true,
       data: {
@@ -410,8 +388,6 @@ export const cancelDebate = async (
     const { debateId } = req.params;
 
     logger.info(`Cancelling debate: ${debateId}`);
-
-    // Call FastAPI to cancel the debate
     const response = await axios.post(
       `${FASTAPI_BASE_URL}/debates/${debateId}/cancel`,
       {},
@@ -454,6 +430,33 @@ export const cancelDebate = async (
   }
 };
 
+export const getHumanReady = async (
+  req: Request,
+  res: Response
+): Promise<Response> => {
+  try {
+    const { debateId } = req.params;
+    const response = await fetch(`${FASTAPI_BASE_URL}/debates/${debateId}/human-ready`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || "Failed to signal human ready");
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (err: any) {
+    console.error("Error signaling human ready:", err);
+    return { success: false, message: err.message };
+  }
+};
+
+
 export const getHumanResponse = async (
   req: Request,
   res: Response
@@ -462,9 +465,9 @@ export const getHumanResponse = async (
     const { debateId } = req.params;
     const { response_text, extracted_answer } = req.body;
 
-    logger.info(`📨 Received human response for debate ${debateId}`);
-    logger.info(`   Response text: ${response_text?.slice(0, 100)}...`);
-    logger.info(`   Extracted answer: ${extracted_answer}`);
+    logger.info(`Received human response for debate ${debateId}`);
+    logger.info(`Response text: ${response_text?.slice(0, 100)}...`);
+    logger.info(`Extracted answer: ${extracted_answer}`);
 
     if (!debateId) {
       return res.status(400).json({

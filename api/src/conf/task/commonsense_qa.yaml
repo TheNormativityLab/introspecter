@@ -2,8 +2,8 @@ defaults:
   - base
 
 name: commonsense_qa
-data_path: "./data/commonsense_qa/train_rand_split.jsonl"
-# data_path: "./data/commonsense_qa_failures/gpt_35_turbo/commonsense_qa_wrong_responses_100.json"
+# data_path: "./data/commonsense_qa/train_rand_split.jsonl"
+data_path: "./data/commonsense_qa.json"
 metrics:
   - "accuracy"
 

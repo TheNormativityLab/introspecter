@@ -22,6 +22,7 @@ interface DebateData {
   seeds: number[];
   agents: Agent[];
   selectedDatasets: string[];
+  allDatasets?: string[];
   customQuestions: string[];
   status: string;
   createdAt: string;
@@ -542,13 +543,24 @@ export const getNewDebate = async (
       selectedDatasets:
         debateData.selectedDatasets || req.body.selectedDatasets,
     });
+    const totalQuestions = Number(debateData.totalQuestions ?? req.body.num_questions ?? 1);
+    const customQuestions = formattedCustomQuestions || [];
+    const numCustomQuestions = customQuestions.length;
+    const selectedDatasets = debateData.selectedDatasets || [];
+    const hasCustomQuestions = selectedDatasets.includes("custom_questions");
+    const regularDatasets = selectedDatasets.filter(d => d !== "custom_questions");
+    let questionsPerDataset = totalQuestions;
+    if (regularDatasets.length > 0) {
+      const questionsForDatasets = Math.max(0, totalQuestions - numCustomQuestions);
+      questionsPerDataset = Math.floor(questionsForDatasets / regularDatasets.length);
+      console.log(`Distribution: ${questionsForDatasets} questions / ${regularDatasets.length} datasets = ${questionsPerDataset} per dataset`);
+      console.log(`Plus ${numCustomQuestions} custom questions`);
+    }
 
     const fastapiRequest: FastAPIDebateRequest = {
       debate_type: (debateData.debateType as any) ?? "basic_debate",
       task: mapDatasetToTask(debateData.selectedDatasets?.[0] ?? "gsm8k"),
-      num_questions: Number(
-        debateData.totalQuestions ?? req.body.num_questions ?? 1
-      ),
+      num_questions: questionsPerDataset,
       num_rounds: Number(debateData.numRounds ?? req.body.num_rounds ?? 1),
       num_agents: agentModels.length,
       agent_models: agentModels,
@@ -560,6 +572,8 @@ export const getNewDebate = async (
       custom_questions: formattedCustomQuestions,
       selected_datasets: debateData.selectedDatasets || [],
     };
+
+    console.log(`Final request: ${questionsPerDataset} questions per dataset, ${numCustomQuestions} custom questions`);
 
     logger.info("📤 Sending to FastAPI:", {
       url: `${FASTAPI_BASE_URL}/debates`,
