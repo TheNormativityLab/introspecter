@@ -144,7 +144,7 @@ class DebateRepository:
         self.session.add(question)
         await self.session.flush() 
         
-        logger.info(f"✅ Created question: ID={question.id}")
+        logger.info(f"Created question: ID={question.id}")
         
         return question
 

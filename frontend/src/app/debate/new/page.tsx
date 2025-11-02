@@ -66,6 +66,7 @@ export default function NewDebatePage() {
   const availableDatasets = [
     { value: "gsm8k", label: "GSM8K (Math Word Problems)" },
     { value: "mmlu", label: "MMLU (Massive Multitask Language Understanding)" },
+    { value: "commonsense_qa", label: "CommonsenseQA (Commonsense Reasoning)" },
     { value: "custom", label: "Custom Questions" },
   ];
   const router = useRouter();
@@ -85,6 +86,11 @@ export default function NewDebatePage() {
   };
 
   const addAgent = () => {
+    if (formData.agents.length >= 3) {
+      alert("Maximum of 3 agents allowed.");
+      return;
+    }
+
     const newAgentId = `agent${Date.now()}`;
     const newAgent: AgentConfig = {
       id: newAgentId,
@@ -98,7 +104,6 @@ export default function NewDebatePage() {
       agents: [...prev.agents, newAgent],
     }));
   };
-
   const removeAgent = (agentId: string) => {
     setFormData((prev) => ({
       ...prev,

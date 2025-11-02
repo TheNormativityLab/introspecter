@@ -5,7 +5,7 @@ language_models:
     litellm_params:
       model: "gpt-4o-mini"
       timeout: 300
-      num_retries: 7
+      num_retries: 3
       rpm: 1000
 
 completion_params:

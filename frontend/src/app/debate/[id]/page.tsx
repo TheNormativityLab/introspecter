@@ -591,69 +591,172 @@ export default function DebateDetailsPage() {
     setSelectedQuestion(0);
   }, [selectedRun]);
 
-  const renderLatex = (text: string) => {
-    if (!katexLoaded || !(window as any).katex) {
-      return <span>{text}</span>;
-    }
+const renderLatex = (text: string): React.ReactNode => {
+  // Early return if KaTeX isn't loaded
+  if (!katexLoaded || !(window as any).katex) {
+    return <span>{text}</span>;
+  }
 
-    const latexRegex =
-      /\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)|\$\$([\s\S]*?)\$\$|\$([^\$\n]+?)\$/g;
-
+  // Helper function to process bold text within a string
+  const processBold = (text: string, keyPrefix: string): React.ReactNode[] => {
+    const boldRegex = /\*\*(.*?)\*\*/g;
+    const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let match;
-    const parts: React.ReactNode[] = [];
-    let partKey = 0;
+    let keyIndex = 0;
 
-    while ((match = latexRegex.exec(text)) !== null) {
+    while ((match = boldRegex.exec(text)) !== null) {
+      // Add text before bold
       if (match.index > lastIndex) {
-        const normalText = text.substring(lastIndex, match.index);
-        parts.push(...processBold(normalText, partKey));
-        partKey += normalText.length;
-      }
-
-      const latex = match[1] || match[2] || match[3] || match[4];
-      const isDisplay = !!(match[1] || match[3]);
-
-      try {
-        const html = (window as any).katex.renderToString(latex, {
-          displayMode: isDisplay,
-          throwOnError: false,
-          output: "html",
-        });
         parts.push(
-          <span
-            key={`latex-${partKey++}`}
-            dangerouslySetInnerHTML={{ __html: html }}
-            style={{
-              display: isDisplay ? "block" : "inline",
-              margin: isDisplay ? "0.5em 0" : "0",
-            }}
-          />
-        );
-      } catch (err) {
-        parts.push(
-          <span
-            key={`latex-error-${partKey++}`}
-            style={{
-              color: "#b91c1c",
-              fontFamily: "monospace",
-            }}
-          >
-            {match[0]}
+          <span key={`${keyPrefix}-text-${keyIndex++}`}>
+            {text.substring(lastIndex, match.index)}
           </span>
         );
       }
-
+      // Add bold text
+      parts.push(
+        <strong key={`${keyPrefix}-bold-${keyIndex++}`}>{match[1]}</strong>
+      );
       lastIndex = match.index + match[0].length;
     }
 
+    // Add remaining text
     if (lastIndex < text.length) {
-      const remainingText = text.substring(lastIndex);
-      parts.push(...processBold(remainingText, partKey));
+      parts.push(
+        <span key={`${keyPrefix}-text-${keyIndex++}`}>
+          {text.substring(lastIndex)}</span>
+      );
     }
 
-    return <>{parts}</>;
+    return parts.length > 0 ? parts : [<span key={`${keyPrefix}-text-0`}>{text}</span>];
   };
+
+  let processedText = text;
+
+  // Protect dollar amounts: $200, $50.99, etc.
+  // Replace with a placeholder to avoid LaTeX interpretation
+  const dollarAmounts: string[] = [];
+  processedText = processedText.replace(/\$(\d+(?:\.\d+)?)/g, (match, amount) => {
+    dollarAmounts.push(match);
+    return `__DOLLAR_${dollarAmounts.length - 1}__`;
+  });
+
+  // LaTeX detection regex - only match valid LaTeX patterns
+  // \[...\], \(...\), $$...$$, $...$ (with content), <<...>>, \boxed{...}
+  const latexRegex = /\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$\$[\s\S]*?\$\$|\$[^$\s][^$]*?[^$\s]\$|<<[^>]+>>|\\boxed\{[^}]+\}/g;
+
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let partKey = 0;
+
+  // Function to render KaTeX
+  const renderKatex = (
+    latex: string,
+    isDisplay: boolean,
+    isCalculation: boolean
+  ): React.ReactNode => {
+    try {
+      let formattedLatex = latex.trim();
+
+      // Format calculation expressions in <<...>>
+      if (isCalculation) {
+        formattedLatex = formattedLatex
+          .replace(/\*/g, ' \\times ')
+          .replace(/\+/g, ' + ')
+          .replace(/(?<=\d)-(?=\d)/g, ' - ')
+          .replace(/=/g, ' = ');
+      }
+
+      const html = (window as any).katex.renderToString(formattedLatex, {
+        displayMode: isDisplay,
+        throwOnError: false,
+        output: "html",
+        strict: false,
+        trust: false,
+      });
+
+      return (
+        <span
+          key={`latex-${partKey++}`}
+          dangerouslySetInnerHTML={{ __html: html }}
+          style={{
+            display: isDisplay ? "block" : "inline",
+            margin: isDisplay ? "0.5em 0" : "0 0.1em",
+            padding: isCalculation ? "0 0.25em" : "0",
+          }}
+        />
+      );
+    } catch (err) {
+      console.warn('KaTeX rendering error:', err);
+      // Just return the original text without $ signs for inline math
+      const cleanText = latex.replace(/^\$|\$$/g, '');
+      return (
+        <span key={`latex-text-${partKey++}`}>
+          {cleanText}
+        </span>
+      );
+    }
+  };
+
+  let match;
+  while ((match = latexRegex.exec(processedText)) !== null) {
+    // Add text before the match
+    if (match.index > lastIndex) {
+      const normalText = processedText.substring(lastIndex, match.index);
+      parts.push(...processBold(normalText, `text-${partKey++}`));
+    }
+
+    let latexContent = match[0];
+    let isDisplay = false;
+    let isCalculation = false;
+
+    // Determine type and extract content
+    if (latexContent.startsWith('\\[') && latexContent.endsWith('\\]')) {
+      isDisplay = true;
+      latexContent = latexContent.slice(2, -2);
+    } else if (latexContent.startsWith('\\(') && latexContent.endsWith('\\)')) {
+      latexContent = latexContent.slice(2, -2);
+    } else if (latexContent.startsWith('$$') && latexContent.endsWith('$$')) {
+      isDisplay = true;
+      latexContent = latexContent.slice(2, -2);
+    } else if (latexContent.startsWith('$') && latexContent.endsWith('$')) {
+      latexContent = latexContent.slice(1, -1);
+    } else if (latexContent.startsWith('<<') && latexContent.endsWith('>>')) {
+      isCalculation = true;
+      latexContent = latexContent.slice(2, -2);
+    } else if (latexContent.startsWith('\\boxed{')) {
+      // Keep \boxed as is
+      latexContent = latexContent;
+    }
+
+    if (latexContent.trim()) {
+      parts.push(renderKatex(latexContent, isDisplay, isCalculation));
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Add remaining text after last match
+  if (lastIndex < processedText.length) {
+    const remainingText = processedText.substring(lastIndex);
+    parts.push(...processBold(remainingText, `text-${partKey++}`));
+  }
+
+  // Restore dollar amounts
+  const result = parts.map((part, idx) => {
+  if (typeof part === 'object' && part && 'props' in part && 'children' in (part as any).props && typeof (part as any).props.children === 'string') {
+    const text = (part as { props: { children: string } }).props.children;
+      const restoredText = text.replace(/__DOLLAR_(\d+)__/g, (_, index) => dollarAmounts[parseInt(index)]);
+      if (restoredText !== text) {
+        return <span key={`restored-${idx}`}>{restoredText}</span>;
+      }
+    }
+    return part;
+  });
+
+  return result.length > 0 ? <>{result}</> : <span>{text}</span>;
+};
 
   const getStartingRound = (): number => {
     if (!currentRun?.performance_data || !Array.isArray(currentRun.performance_data)) {
@@ -754,7 +857,10 @@ const startingRound = getStartingRound();
       {/* Header */}
       <div className="debate-header">
         <div className="header-content">
-          <button onClick={() => window.history.back()} className="back-button">
+          <button
+            onClick={() => (window.location.href = "/dashboard")}
+            className="back-button"
+          >
             <ArrowLeft />
             Back to Dashboard
           </button>

@@ -35,6 +35,7 @@ interface DebateRun {
   status: string;
   wandb_metadata: any;
   processed_at: string;
+  is_replay?: boolean;
 }
 
 interface ExperimentGroup {
@@ -149,7 +150,25 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
         data.experiment_groups.forEach((experimentGroup: ExperimentGroup) => {
           if (experimentGroup.runs && Array.isArray(experimentGroup.runs)) {
             experimentGroup.runs.forEach((run: DebateRun) => {
-              if (run.status === "completed") {
+              const isReplayDebate = run.is_replay === true || experimentGroup.experiment_name?.toLowerCase().includes('replay');
+              const hasHumanAgent = experimentGroup.model_config?.LLM?.some(
+                (llm: LLMConfig) => {
+                  const modelStr = (llm.model || '').toLowerCase();
+                  const modelNameStr = (llm.modelName || '').toLowerCase();
+                  return modelStr.includes('human') || modelNameStr.includes('human');
+                }
+              ) || (() => {
+                const wandbArgs = run.wandb_metadata?.parsed_args;
+                if (wandbArgs) {
+                  return Object.values(wandbArgs).some(
+                    (value) => typeof value === 'string' && value.toLowerCase().includes('human')
+                  );
+                }
+                return false;
+              })();
+
+              // Only include if completed AND not a replay AND no human agents
+              if (run.status === "completed" && !isReplayDebate && !hasHumanAgent) {
                 const uniqueId = run.debate_id
                   ? `debate-${run.debate_id}`
                   : `exp-${experimentGroup.experiment_name}-seed-${run.seed}`;
@@ -305,7 +324,10 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
       setLoading(false);
     }
   };
-
+  
+  const handleBackToDashboard = () => {
+      window.history.back();
+  };
   const handleDebateSelect = async (debate: Debate) => {
     setSelectedDebate(debate);
     setSelectedQuestion(null);
@@ -332,13 +354,11 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
     try {
       const questionData = debateDetails.questions[selectedQuestion];
       const selectedAgentName = agents[agentToReplace]
-        .replace(/_agent_\d+$/, "")
         .replace(/-chat/, "")
         .replace(/^human$/, "human-participant");
       const agent_counts: Record<string, number> = agents.reduce(
         (acc: Record<string, number>, agent: string) => {
-          const cleanAgentName = agent.replace(/_agent_\d+$/, "");
-          acc[cleanAgentName] = (acc[cleanAgentName] || 0) + 1;
+          acc[agent] = (acc[agent] || 0) + 1;
           return acc;
         },
         {}
@@ -350,20 +370,15 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
       }
       console.log("Agent counts:", agent_counts);
       const previousRounds = questionData.debate_session.rounds
-        .slice(0, selectedRound)
-        .map((round) => {
-          const filteredResponses = { ...round.responses };
-          delete filteredResponses[selectedAgentName];
-          return {
-            ...round,
-            responses: filteredResponses,
-          };
-        });
+      .slice(0, selectedRound)
+      .map((round) => ({
+        responses: round.responses
+      }));
       const payload = {
         original_debate_id: selectedDebate.debate_id,
         question_index: selectedQuestion,
         start_from_round: selectedRound,
-        replace_agent_name: selectedAgentName.replace(/_agent_\d+$/, ""),
+        replace_agent_name: selectedAgentName,
         question_data: {
           question_text: questionData.question,
           question_prompt: questionData.question_prompt,
@@ -423,6 +438,10 @@ const DebateDebugger: React.FC<DebateDebuggerProps> = ({ onReplayStarted }) => {
         <div className="header-content">
           <div className="header-main">
             <div className="header-info">
+              <button onClick={handleBackToDashboard} className="back-button">
+                <ArrowLeft className="w-5 h-5" />
+                Back to Dashboard
+              </button>
               <h1 className="header-title">Debate Debugger</h1>
               <p className="header-subtitle">
                 Replay completed debates with human intervention

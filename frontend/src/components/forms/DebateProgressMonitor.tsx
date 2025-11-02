@@ -65,6 +65,7 @@ interface ProgressMessage {
   message?: string;
   data?: any;
   timestamp: string;
+  waiting_for_human?: boolean;
 }
 
 const DebateProgressMonitor = ({
@@ -342,7 +343,6 @@ const DebateProgressMonitor = ({
       console.log("Added custom_questions instances:", numCustomQuestions);
     }
 
-    // Store initialized debates in state
     setDebates(instances);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -469,33 +469,46 @@ const DebateProgressMonitor = ({
               const hasHumanAgent = debateData.agents?.some(
                 agent => agent.enabled && agent.model === "human-participant"
               );
-              console.log("Has human agent:", hasHumanAgent, "| Is replay:", debateData.isReplay);
-              if (hasHumanAgent || debateData.isReplay) {
-                setTimeout(async () => {
-                  try {
-                    console.log("Sending human-ready signal for debate:", debateId);
-                    const response = await fetch(`/api/debate/${debateId}/human-ready`, {
-                      method: "POST",
-                      headers: {
-                        "Content-Type": "application/json",
-                      },
-                    });
-                    
-                    if (response.ok) {
-                      console.log("Ready signal sent successfully");
-                      addLog("Ready signal sent", index);
-                    } else {
-                      console.error("Failed to send ready signal:", response.status);
-                      addLog("Failed to send ready signal", index);
+              
+              const backendWaitingForHuman = message.waiting_for_human || message.data?.waiting_for_human;
+              
+              console.log("Has human agent:", hasHumanAgent, "| Is replay:", debateData.isReplay, "| Backend waiting:", backendWaitingForHuman);
+              
+              if (hasHumanAgent || backendWaitingForHuman) {
+                const currentDebate = debates[index];
+                const isDebateFinished = currentDebate?.status === "completed" || currentDebate?.status === "error";
+                
+                if (!isDebateFinished) {
+                  setTimeout(async () => {
+                    const latestDebate = debates[index];
+                    if (latestDebate?.status === "completed" || latestDebate?.status === "error") {
+                      console.log("Debate already finished, skipping ready signal");
+                      return;
                     }
-                  } catch (err) {
-                    console.error("Error sending human-ready signal:", err);
-                    addLog(`Error sending ready signal: ${err}`, index);
-                  }
-                }, 500);
+                    
+                    try {
+                      console.log("Sending human-ready signal for debate:", debateId);
+                      const response = await fetch(`/api/debate/${debateId}/human-ready`, {
+                        method: "POST",
+                        headers: {
+                          "Content-Type": "application/json",
+                        },
+                      });
+                      
+                      if (response.ok) {
+                        console.log("Ready signal sent successfully");
+                        addLog("Ready signal sent", index);
+                      } else {
+                        console.error("Failed to send ready signal:", response.status);
+                        addLog("Failed to send ready signal", index);
+                      }
+                    } catch (err) {
+                      addLog(`${err}`, index);
+                    }
+                  }, 500);
+                }
               } else {
-                const reason = debateData.isReplay ? "replay mode" : "no human agent";
-                console.log(`Skipping ready signal - ${reason}`);
+                console.log(`Skipping ready signal - no human agent and backend not waiting`);
               }
             }
             if (
@@ -638,7 +651,6 @@ const DebateProgressMonitor = ({
           } else {
             addLog("No debate ID available for fetching results", index);
           }
-          addUniqueLog("Debate completed successfully", index, debateId);
           setDebates((prev) => [
             ...prev.slice(0, index),
             { ...prev[index], status: "completed", progress: 100 },
@@ -708,8 +720,18 @@ const DebateProgressMonitor = ({
       addLog("Cannot fetch results - no debate ID", index);
       return;
     }
+    
+    // Get debate info before async operations
+    let debateSeed: number;
+    let debateExperimentName: string;
+    
     setDebates((prev) => {
       const debate = prev[index];
+      if (!debate) {
+        console.log("Debate not found at index", index);
+        return prev;
+      }
+      
       if (
         debate.logs.some((log) =>
           log.includes("Results fetched successfully")
@@ -718,13 +740,26 @@ const DebateProgressMonitor = ({
         console.log("Results already fetched, skipping...");
         return prev;
       }
+      
+      // Store values for later use
+      debateSeed = debate.seed;
+      debateExperimentName = debateData.experimentName;
+      
       return prev;
     });
 
     try {
       const response = await fetch(`/api/debate/${debateId}/results`);
       const data = await response.json();
-      addUniqueLog("Results fetched successfully", index, debateId);
+      addUniqueLog("Debate completed successfully", index, debateId);      
+      setTimeout(() => {
+        const experimentName = debateData.isReplay 
+          ? `replay_${debateExperimentName}` 
+          : debateExperimentName;
+        const url = `/debate/${experimentName}?seed=${debateSeed}`;
+        console.log("Redirecting to:", url);
+        window.location.href = url;
+      }, 1000);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       addLog(`Error fetching results: ${message}`, index);
@@ -739,7 +774,6 @@ const DebateProgressMonitor = ({
     const debate = debates[index];
 
     try {
-      addLog(`Submitting human response: "${extracted}"`, index);
       const expId = debate.id;
       if (!expId) {
         addLog("Debate ID missing", index);
@@ -753,7 +787,7 @@ const DebateProgressMonitor = ({
           extracted_answer: extracted,
         }),
       });
-
+      
       const data = await res.json();
 
       if (data.success) {
@@ -834,10 +868,6 @@ const DebateProgressMonitor = ({
 
       <div className="header">
         <div className="header-content">
-          <div className="back-button" onClick={onBack}>
-            <ArrowLeft className="w-5 h-5 mr-2" />
-            Back to Form
-          </div>
           <div className="back-button" onClick={onBackDashboard}>
             <ArrowLeft className="w-5 h-5 mr-2" />
             Back to Dashboard

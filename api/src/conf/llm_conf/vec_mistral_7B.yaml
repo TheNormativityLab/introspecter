@@ -3,18 +3,11 @@
 language_models:
   - model_name: "mistral-7b"
     litellm_params:
-      model: "openai/Mistral-7B-Instruct-v0.2"
-      api_base: "${oc.env:KSCOPE_API_BASE}"
-      api_key: "${oc.env:KSCOPE_API_KEY}"
+      model: "together_ai/mistralai/Mistral-7B-Instruct-v0.2" # the actual model endpoint
       timeout: 300
-      num_retries: 5
-  - model_name: "mistral-7b"
-    litellm_params:
-      model: "openai/Mistral-7B-Instruct-v0.2"
-      api_base: "http://gpu027:8080/v1"
-      api_key: "EMPTY"
-      timeout: 300
-      num_retries: 5
+      # tpm: 100000
+      rpm: 1000
+      num_retries: 7
 
 completion_params:
   top_p: 0.9

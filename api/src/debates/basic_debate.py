@@ -130,14 +130,7 @@ class BasicDebateOrchestrator:
     ) -> List[BasicDebateAgent]:
         """
         Create agents in the exact order specified by agent_models.
-        This ensures human agents are placed at the correct index.
-        
-        Args:
-            hydra_cfg: Hydra configuration
-            agent_models: List like ['gpt_4o_mini', 'human-participant', 'gpt_4o_mini']
-        
-        Returns:
-            List of agents in the specified order
+        FIXED: Properly maps agents to their LLM configs with fallback handling.
         """
         task_config = hydra_cfg.get("task", {})
         task = task_config.get("name", "unknown")
@@ -150,197 +143,62 @@ class BasicDebateOrchestrator:
             "partials": {**(agent_prompts.get("partials") or {}), **task_partials},
         }
         
-        llm_configs = {
-            'llm1': hydra_cfg.get("llm1") or {},
-            'llm2': hydra_cfg.get("llm2") or {},
-            'llm3': hydra_cfg.get("llm3") or {},
-        }
-        
-        agents = []
-        human_count = 0
-        model_counts = {}
-        
-        logger.info(f"Creating {len(agent_models)} agents in specified order")
-        
-        for agent_idx, model_name in enumerate(agent_models):
-            logger.info(f"Creating agent {agent_idx}: {model_name}")
-            
-            is_human = model_name.lower() in ['human-participant', 'human', 'mock/human']
-            
-            if is_human:
-                agent_name = f"human_agent_{human_count}"
-                human_count += 1
-                
-                agent = BasicDebateAgent(
-                    config=AgentConfig(
-                        prompt_config=PromptConfig(
-                            system_prompt=prompts.get("system_prompt", "You are a helpful assistant."),
-                            partials=prompts.get("partials", {}),
-                        ),
-                        llm_config=None,
-                        name=agent_name,
-                    ),
-                    num_agents=len(agent_models),
-                    domain=task,
-                    debug=False,
-                )
-                
-                await agent.build()
-                await agent.reset()
-                
-                # Track human agent
-                self.human_agent_names.add(agent.name)
-                self.human_agent_name = agent.name
-                self.agent_metadata[agent.name] = {
-                    "model_name": "human", 
-                    "is_human": True,
-                    "agent_instance": agent
-                }
-                self.agent_name_map[agent.name] = agent
-                
-                logger.info(f"Created human agent at position {agent_idx}: {agent.name}")
-                
-            else:
-                if model_name not in model_counts:
-                    model_counts[model_name] = 0
-                
-                agent_name = f"{model_name}_agent_{model_counts[model_name]}"
-                model_counts[model_name] += 1
-                
-                llm_config_dict = llm_configs.get(model_name)
-                if not llm_config_dict:
-                    llm_config_dict = hydra_cfg.get("llm1") or {}
-                    logger.warning(f"Using fallback LLM config (llm1) for {model_name}")
-                
-                llm_config_omega = OmegaConf.create(llm_config_dict)
-                
-                agent = BasicDebateAgent(
-                    config=AgentConfig(
-                        prompt_config=PromptConfig(
-                            system_prompt=prompts.get("system_prompt", "You are a helpful assistant."),
-                            partials=prompts.get("partials", {}),
-                        ),
-                        llm_config=LLMConfig.from_hydra_config(llm_config_omega),
-                        name=agent_name,
-                    ),
-                    num_agents=len(agent_models),
-                    domain=task,
-                    debug=False,
-                )
-                
-                await agent.build()
-                await agent.reset()
-                
-                actual_model_name = "unknown"
-                try:
-                    actual_model_name = agent.config.llm_config.language_models[0].model_name if agent.config.llm_config.language_models else model_name
-                except Exception:
-                    actual_model_name = model_name
-                
-                self.agent_metadata[agent.name] = {
-                    "model_name": actual_model_name,
-                    "is_human": False
-                }
-                self.agent_name_map[agent.name] = agent
-                
-                logger.info(f"Created LLM agent at position {agent_idx}: {agent.name} ({actual_model_name})")
-            
-            agents.append(agent)
-        
-        logger.info(f"Successfully created {len(agents)} agents ({human_count} human, {len(agents) - human_count} LLM)")
-        logger.info(f"Agent order: {[a.name for a in agents]}")
-        
-        return agents
-
-    async def _create_agents_from_models(
-        self,
-        hydra_cfg: Dict[str, Any],
-        agent_models: List[str]
-    ) -> List[BasicDebateAgent]:
-        """
-        Create agents in the exact order specified by agent_models.
-        This ensures human agents are placed at the correct index.
-        
-        Args:
-            hydra_cfg: Hydra configuration
-            agent_models: List like ['gpt-4o-mini', 'human-participant', 'gpt-3.5-turbo']
-        
-        Returns:
-            List of agents in the specified order
-        """
-        task_config = hydra_cfg.get("task", {})
-        task = task_config.get("name", "unknown")
-        
-        agent_prompts = hydra_cfg.get("agent_prompts") or {}
-        task_partials = hydra_cfg.get("task", {}).get("partials") or {}
-        
-        prompts = {
-            "system_prompt": agent_prompts.get("system_prompt", "You are a helpful assistant."),
-            "partials": {**(agent_prompts.get("partials") or {}), **task_partials},
-        }
-        
-        # Get all available LLM configs from llm1, llm2, llm3
+        # Get all available LLM configs
         available_llm_configs = []
+        llm_config_keys = []
         for i in range(1, 4):
             llm_key = f"llm{i}"
             if llm_key in hydra_cfg and hydra_cfg[llm_key]:
                 available_llm_configs.append(hydra_cfg[llm_key])
+                llm_config_keys.append(llm_key)
                 logger.info(f"Found config at {llm_key}")
         
-        # Build a mapping from normalized model names to their configs
+        # Build mapping from normalized model names to their configs
         model_to_config = {}
-        model_aliases = {}  # Add alias mapping
-
         for llm_config in available_llm_configs:
-            # Extract model name from the config
             model_name = None
             
-            # Try to get from language_models first (most reliable for Hydra configs)
+            # Extract model name
             if "language_models" in llm_config:
                 lang_models = llm_config["language_models"]
                 if lang_models and len(lang_models) > 0:
                     first_model = lang_models[0]
-                    # Get from litellm_params.model first, then model_name
                     if "litellm_params" in first_model:
                         model_name = first_model["litellm_params"].get("model")
                     if not model_name:
                         model_name = first_model.get("model_name")
             
-            # Fallback to litellm_params at root level
             if not model_name and "litellm_params" in llm_config:
                 model_name = llm_config["litellm_params"].get("model")
             
-            # Final fallback to model or modelName fields
             if not model_name:
                 model_name = llm_config.get("model") or llm_config.get("modelName")
             
             if model_name:
-                # Store both normalized and original
                 normalized = normalize_model_name(model_name)
+                
+                # Store under normalized name
                 model_to_config[normalized] = llm_config
-                model_to_config[model_name] = llm_config  # Also store original
-                
-                # Add common aliases
-                # For together_ai/mistralai/Mistral-7B-Instruct-v0.2
-                if 'mistral' in model_name.lower() and '7b' in model_name.lower():
-                    model_aliases['mistral-7b'] = normalized
-                    model_aliases['mistral_7b'] = normalized
-                
-                # For together_ai/meta-llama/Llama-3-8b-chat-hf
-                if 'llama' in model_name.lower() and '3' in model_name.lower():
-                    model_aliases['llama-3-8b'] = normalized
-                    model_aliases['llama_3_8b'] = normalized
-                
-                logger.info(f"Mapped model '{model_name}' (normalized: '{normalized}') to config")
+                if normalized.startswith('vec-'):
+                    without_vec = normalized[4:]
+                    model_to_config[without_vec] = llm_config
+                    logger.info(f"Mapped '{model_name}' -> normalized '{normalized}' AND '{without_vec}'")
+                else:
+                    with_vec = f"vec-{normalized}"
+                    model_to_config[with_vec] = llm_config
+                    logger.info(f"Mapped '{model_name}' -> normalized '{normalized}' AND '{with_vec}'")
+        
+        logger.info(f"Available config keys: {list(model_to_config.keys())}")
         
         agents = []
         human_count = 0
-        model_counts = {}
         
-        logger.info(f"Creating {len(agent_models)} agents in specified order")
+        model_to_config_usage = {}
+        
+        logger.info(f"Creating {len(agent_models)} agents in specified order: {agent_models}")
         
         for agent_idx, model_name in enumerate(agent_models):
-            logger.info(f"Creating agent {agent_idx}: {model_name}")
+            logger.info(f"\n=== Creating agent {agent_idx}: {model_name} ===")
             
             is_human = normalize_model_name(model_name) == 'human-participant'
             
@@ -365,7 +223,6 @@ class BasicDebateOrchestrator:
                 await agent.build()
                 await agent.reset()
                 
-                # Track human agent
                 self.human_agent_names.add(agent.name)
                 self.human_agent_name = agent.name
                 self.agent_metadata[agent.name] = {
@@ -378,74 +235,113 @@ class BasicDebateOrchestrator:
                 logger.info(f"✓ Created human agent at position {agent_idx}: {agent.name}")
                 
             else:
-                if model_name not in model_counts:
-                    model_counts[model_name] = 0
-                
-                agent_name = f"{model_name}_agent_{model_counts[model_name]}"
-                model_counts[model_name] += 1
-                
-                # Find the matching config by trying multiple lookup strategies
+                # For AI agents, we need to find the RIGHT config
                 normalized_model = normalize_model_name(model_name)
+                
+                # Initialize usage counter for this model if needed
+                if normalized_model not in model_to_config_usage:
+                    model_to_config_usage[normalized_model] = 0
+                
+                # Get the agent number for this model type (0-indexed)
+                agent_num_for_model = model_to_config_usage[normalized_model]
+                model_to_config_usage[normalized_model] += 1
+                
+                # Build agent name (preserve original format for consistency)
+                agent_name = f"{model_name}_agent_{agent_num_for_model}"
+                
+                # Find matching config with multiple strategies
                 llm_config_dict = None
                 
-                # Strategy 1: Try normalized name (with hyphens)
+                # Strategy 1: Direct lookup by normalized name
                 if normalized_model in model_to_config:
                     llm_config_dict = model_to_config[normalized_model]
-                    logger.info(f"  Found config via normalized name: {normalized_model}")
+                    logger.info(f"  ✓ Found config via direct match: {normalized_model}")
                 
-                # Strategy 2: Try original name as-is
-                if not llm_config_dict and model_name in model_to_config:
-                    llm_config_dict = model_to_config[model_name]
-                    logger.info(f"  Found config via original name: {model_name}")
+                # Strategy 2: Try without vec- prefix
+                if not llm_config_dict and normalized_model.startswith('vec-'):
+                    without_vec = normalized_model[4:]
+                    if without_vec in model_to_config:
+                        llm_config_dict = model_to_config[without_vec]
+                        logger.info(f"  ✓ Found config via vec- removal: {without_vec}")
                 
-                # Strategy 3: Try with underscores (for cases where model_name has hyphens)
+                # Strategy 3: Try with vec- prefix
+                if not llm_config_dict and not normalized_model.startswith('vec-'):
+                    with_vec = f"vec-{normalized_model}"
+                    if with_vec in model_to_config:
+                        llm_config_dict = model_to_config[with_vec]
+                        logger.info(f"  ✓ Found config via vec- addition: {with_vec}")
+                
+                # Strategy 4: Fuzzy matching on base model name (llama, mistral, gpt)
                 if not llm_config_dict:
-                    alt_name_underscores = model_name.replace('-', '_')
-                    if alt_name_underscores in model_to_config:
-                        llm_config_dict = model_to_config[alt_name_underscores]
-                        logger.info(f"  Found config via underscore name: {alt_name_underscores}")
-                
-                # Strategy 4: Try with hyphens (for cases where model_name has underscores)
-                if not llm_config_dict:
-                    alt_name_hyphens = model_name.replace('_', '-')
-                    if alt_name_hyphens in model_to_config:
-                        llm_config_dict = model_to_config[alt_name_hyphens]
-                        logger.info(f"  Found config via hyphen name: {alt_name_hyphens}")
-                
-                # Strategy 5: Fuzzy match - check if the normalized model name appears in any available config
-                if not llm_config_dict:
-                    normalized_lower = normalized_model.lower()
-                    for config_key, config in model_to_config.items():
-                        config_key_lower = config_key.lower()
-                        # Check if the requested model is contained in the config key
-                        # e.g., "llama-3.1-8b" should match "together-ai/meta-llama/meta-llama-3.1-8b-instruct-turbo"
-                        if normalized_lower in config_key_lower:
-                            llm_config_dict = config
-                            logger.info(f"  Found config via fuzzy match: '{normalized_model}' found in '{config_key}'")
+                    # Extract base model type (llama, mistral, gpt, etc)
+                    base_type = None
+                    for model_type in ['llama', 'mistral', 'gpt']:
+                        if model_type in normalized_model.lower():
+                            base_type = model_type
                             break
+                    
+                    if base_type:
+                        logger.info(f"  Trying fuzzy match for base type: {base_type}")
+                        for config_key in model_to_config.keys():
+                            if base_type in config_key.lower():
+                                # Check version similarity if it's llama or mistral
+                                if base_type in ['llama', 'mistral']:
+                                    # Extract version numbers
+                                    import re
+                                    requested_version = re.findall(r'\d+', normalized_model)
+                                    config_version = re.findall(r'\d+', config_key)
+                                    
+                                    # Match if major versions align
+                                    if requested_version and config_version:
+                                        if requested_version[0] == config_version[0]:
+                                            llm_config_dict = model_to_config[config_key]
+                                            logger.info(f"  ✓ Found config via fuzzy match: '{normalized_model}' -> '{config_key}'")
+                                            break
+                                else:
+                                    # For GPT models, just match the base type
+                                    llm_config_dict = model_to_config[config_key]
+                                    logger.info(f"  ✓ Found config via base type match: '{config_key}'")
+                                    break
                 
-                # Strategy 6: Token-based matching - match key components
+                # Strategy 5: Fallback to llm_conf array from hydra_cfg if it exists
+                if not llm_config_dict and 'llm_conf' in hydra_cfg:
+                    llm_conf_array = hydra_cfg['llm_conf']
+                    if isinstance(llm_conf_array, list):
+                        for conf in llm_conf_array:
+                            conf_model = conf.get('modelName') or conf.get('model', '')
+                            conf_normalized = normalize_model_name(conf_model)
+                            
+                            # Try exact match
+                            if conf_normalized == normalized_model:
+                                llm_config_dict = conf
+                                logger.info(f"  ✓ Found config from llm_conf array (exact)")
+                                break
+                            
+                            # Try without vec- prefix
+                            if conf_normalized.startswith('vec-') and conf_normalized[4:] == normalized_model:
+                                llm_config_dict = conf
+                                logger.info(f"  ✓ Found config from llm_conf array (vec- removal)")
+                                break
+                            
+                            # Try with vec- prefix
+                            if normalized_model.startswith('vec-') and conf_normalized == normalized_model[4:]:
+                                llm_config_dict = conf
+                                logger.info(f"  ✓ Found config from llm_conf array (vec- addition)")
+                                break
+                
                 if not llm_config_dict:
-                    # Extract key tokens from the requested model name
-                    requested_tokens = set(re.findall(r'[a-z]+|\d+(?:\.\d+)?', normalized_model.lower()))
-                    
-                    best_match = None
-                    best_match_score = 0
-                    
-                    for config_key in model_to_config.keys():
-                        config_tokens = set(re.findall(r'[a-z]+|\d+(?:\.\d+)?', config_key.lower()))
-                        # Calculate overlap
-                        overlap = len(requested_tokens & config_tokens)
-                        if overlap > best_match_score and overlap >= len(requested_tokens) * 0.7:  # At least 70% match
-                            best_match = config_key
-                            best_match_score = overlap
-                    
-                    if best_match:
-                        llm_config_dict = model_to_config[best_match]
-                        logger.info(f"  Found config via token matching: '{normalized_model}' matched '{best_match}' (score: {best_match_score})")
+                    error_msg = (
+                        f"Could not find LLM config for model '{model_name}' (normalized: '{normalized_model}')\n"
+                        f"Available configs: {list(model_to_config.keys())}\n"
+                        f"Hint: If you're replaying a debate that used vLLM models (vec_*), make sure you have "
+                        f"the corresponding non-vec configs available, or vice versa."
+                    )
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
                 
-                logger.info(f"  Using config keys: {list(llm_config_dict.keys())}")
+                logger.info(f"  Using config with keys: {list(llm_config_dict.keys())}")
                 
+                # Create the agent with the correct config
                 llm_config_omega = OmegaConf.create(llm_config_dict)
                 
                 agent = BasicDebateAgent(
@@ -481,8 +377,10 @@ class BasicDebateOrchestrator:
             
             agents.append(agent)
         
+        logger.info(f"\n=== Agent Creation Summary ===")
         logger.info(f"Successfully created {len(agents)} agents ({human_count} human, {len(agents) - human_count} LLM)")
         logger.info(f"Agent order: {[a.name for a in agents]}")
+        logger.info(f"Model usage counts: {model_to_config_usage}")
         
         return agents
     
@@ -729,7 +627,10 @@ class BasicDebateOrchestrator:
         """Store a debate round in the database with improved answer comparison."""
         logger.info(f"Round responses: {list(round_data.responses.keys())}")
         logger.info(f"Number of agents: {len(self.agents)}")
-        logger.info(f"Correct answer: '{correct_answer}'")
+        logger.info(f"Correct answer (raw): '{correct_answer}'")
+        
+        extracted_correct_answer = await self.extract_answer_from_response(correct_answer)
+        logger.info(f"Correct answer (extracted): '{extracted_correct_answer}'")
         logger.info(f"Config agent_models: {self.config.get('agent_models') if self.config else 'No config'}")
         
         async with self.db_manager.get_session() as session:
@@ -752,7 +653,7 @@ class BasicDebateOrchestrator:
                     response = round_data.responses[agent.name]
                     
                     if agent_idx == human_agent_index and human_extracted_answer:
-                        extracted = human_extracted_answer
+                        extracted = await self.extract_answer_from_response(human_extracted_answer)
                     else:
                         extracted = await self._extract_agent_answer(agent, response)
                     
@@ -774,11 +675,16 @@ class BasicDebateOrchestrator:
             if agent_answers:
                 answer_counts = Counter(agent_answers)
                 most_common_answer, most_common_count = answer_counts.most_common(1)[0]                
-                is_majority_correct = answers_util(most_common_answer, correct_answer)                
-                majority_vote = 1.0 if is_majority_correct else 0.0
+                if most_common_count > len(agent_answers) / 2:
+                    is_majority_correct = answers_util(most_common_answer, extracted_correct_answer)
+                    majority_vote = 1.0 if is_majority_correct else 0.0
+                    logger.info(f"Majority found: '{most_common_answer}' appears {most_common_count}/{len(agent_answers)} times")
+                else:
+                    majority_vote = 0.0
+                    logger.info(f"No majority: most common answer '{most_common_answer}' only appears {most_common_count}/{len(agent_answers)} times")
             
             logger.info(f"Majority vote: {majority_vote}")
-            logger.info(f"Normalized correct answer: '{normalize_util(correct_answer)}'")
+            logger.info(f"Normalized correct answer: '{normalize_util(extracted_correct_answer)}'")
             
             round_obj = await repo.create_round(
                 question_session_id=self.current_question_session_id,
@@ -793,52 +699,43 @@ class BasicDebateOrchestrator:
                     answer_data = extracted_answers_cache.get(agent.name, {})
                     extracted_answer = answer_data.get('raw')
                     
-                    is_correct = answers_util(extracted_answer, correct_answer) if extracted_answer else None
+                    # Use extracted_correct_answer instead of raw correct_answer
+                    is_correct = answers_util(extracted_answer, extracted_correct_answer) if extracted_answer else None
                     is_human = (agent_idx == human_agent_index)
                     
                     logger.info(f"  Agent {agent_idx} correctness check:")
                     logger.info(f"    Agent name: '{agent.name}'")
                     logger.info(f"    Extracted: '{extracted_answer}'")
-                    logger.info(f"    Correct answer: '{correct_answer}'")
+                    logger.info(f"    Correct answer (extracted): '{extracted_correct_answer}'")
                     logger.info(f"    Is correct: {is_correct}")
+
+                    model_name = None                    
+                    if '_agent_' in agent.name:
+                        model_name = agent.name.rsplit('_agent_', 1)[0]
+                        logger.info(f"    Extracted model from agent.name: '{model_name}'")
                     
-                    # FIX: Properly determine model name from config
-                    model_name = None
+                    # Strategy 2: Check if human
+                    if not model_name or model_name.startswith('human'):
+                        if is_human or agent.name.startswith('human_agent'):
+                            model_name = "human"
+                            logger.info(f"    Detected as human agent")
                     
-                    # Strategy 1: Use agent_models from config (MOST RELIABLE)
+                    # Strategy 3: Use agent_models from config (for validation)
                     if self.config and 'agent_models' in self.config:
                         agent_models = self.config['agent_models']
-                        logger.info(f"    agent_models list: {agent_models}")
-                        logger.info(f"    Looking up index {agent_idx} in agent_models")
-                        
                         if agent_idx < len(agent_models):
-                            raw_model = agent_models[agent_idx]
-                            logger.info(f"    raw_model from config: '{raw_model}'")
+                            config_model = agent_models[agent_idx]
+                            logger.info(f"    Config says agent {agent_idx} should be: '{config_model}'")
                             
-                            # Normalize the model name (convert underscores to hyphens)
-                            if raw_model.lower() in ['human-participant', 'human', 'mock/human']:
-                                model_name = "human"
-                            else:
-                                # Convert gpt_3_5_turbo -> gpt-3.5-turbo, gpt_4o_mini -> gpt-4o-mini
-                                model_name = raw_model.replace('_', '-')
-                            
-                            logger.info(f"    Normalized model name: '{model_name}'")
-                    else:
-                        logger.warning(f"    No agent_models in config!")
+                            # Validate our extraction matches config
+                            if not model_name or model_name == "unknown":
+                                if config_model.lower() in ['human-participant', 'human', 'mock/human']:
+                                    model_name = "human"
+                                else:
+                                    model_name = config_model
+                                logger.info(f"    Using model from config: '{model_name}'")
                     
-                    # Strategy 2: Check if human from metadata
-                    if not model_name and is_human:
-                        model_name = "human"
-                        logger.info(f"    Detected as human agent via human_agent_index")
-                    
-                    # Strategy 3: Use metadata if available
-                    if not model_name:
-                        metadata = self.agent_metadata.get(agent.name, {})
-                        model_name = metadata.get('model_name')
-                        if model_name:
-                            logger.info(f"    Retrieved model from metadata: '{model_name}'")
-                    
-                    # Strategy 4: Extract from agent config
+                    # Final fallback
                     if not model_name or model_name == "unknown":
                         try:
                             if agent.config.llm_config and agent.config.llm_config.language_models:
@@ -846,11 +743,7 @@ class BasicDebateOrchestrator:
                                 logger.info(f"    Retrieved model from agent.config.llm_config: '{model_name}'")
                         except Exception as e:
                             logger.warning(f"    Failed to extract model from agent config: {e}")
-                    
-                    # Final fallback
-                    if not model_name:
-                        model_name = "unknown"
-                        logger.warning(f"    Could not determine model name for agent {agent_idx}, using 'unknown'")
+                            model_name = "unknown"
                     
                     logger.info(f"  *** FINAL model_name for agent {agent_idx}: '{model_name}' ***")
                     
@@ -1067,6 +960,62 @@ class BasicDebateOrchestrator:
         logger.info(
             f"Debate {self.debate_id} completed with {len(formatted_performance)} rounds of performance data"
         )
+
+    async def extract_answer_from_response(self, response: str) -> str:
+        """
+        Extract the final answer from a model response.
+        Handles math-style boxed answers, natural-language answers,
+        and short custom question responses more robustly.
+        """
+        if not response:
+            return ""
+        import re
+        
+        # CRITICAL: Check for #### pattern first (used in math problem answers)
+        final_answer_match = re.search(r'####\s*([+-]?\d+\.?\d*)', response)
+        if final_answer_match:
+            return final_answer_match.group(1).strip()
+        
+        # Check for (X) patterns (multiple choice)
+        final_answer_patterns = [
+            r'\(X\)\s*([A-E])\)',           # (X) C)
+            r'\(X\)\s*\(([A-E])\)',         # (X) (C)
+            r'\(X\)\s*([A-E])(?:\s|$)',     # (X) C at end or followed by space
+        ]
+        
+        for pattern in final_answer_patterns:
+            match = re.search(pattern, response, re.IGNORECASE)
+            if match:
+                return match.group(1).strip().upper()
+        
+        # Check for boxed answers
+        boxed_match = re.search(r'\\boxed\{([^}]+)\}', response)
+        if boxed_match:
+            return boxed_match.group(1).strip()
+        
+        # Other patterns
+        patterns = [
+            r'(?:the )?(?:final )?answer is[:\s]+\(?([A-E])\)?',
+            r'(?:the )?(?:final )?answer is[:\s]+([^\n\.]+)',
+            r'(?:equals?|is|=)\s*([+-]?\d+\.?\d*)',
+            r'(?:therefore|thus|so)[,\s]+(?:the answer is )?\s*([^\n\.]+)',
+            r'\(([A-E])\)\s*$',
+            r'([+-]?\d+\.?\d*)\s*$',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, response, re.IGNORECASE)
+            if match:
+                answer = match.group(1).strip()
+                # Clean up trailing punctuation
+                return answer.rstrip('.,;: ')
+        
+        sentences = [s.strip() for s in response.split('.') if s.strip()]
+        if sentences:
+            return sentences[-1][:100]
+        
+        return response[:100]
+    
     def get_status(self) -> Dict[str, Any]:
         """Get current status of the debate."""
         return {

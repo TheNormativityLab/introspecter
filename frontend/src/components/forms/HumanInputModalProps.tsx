@@ -16,7 +16,8 @@ interface HumanInputModalProps {
     agent_index?: number;
     previous_responses?: string[]; // Old format (deprecated)
     previous_rounds?: PreviousRounds; // New format
-    replace_agent_name?: string; // New field
+    replace_agent_name?: string; // Model type (for backward compatibility)
+    replaced_agent_specific_name?: string; // NEW: Exact agent name being replaced
   };
   onSubmit: (responseText: string, extractedAnswer: string) => void;
   onClose: () => void;
@@ -85,29 +86,25 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
     return agentName;
   };
 
-  // Helper to check if agent is the one being replaced
-  const isReplacedAgent = (agentName: string): boolean => {
-    if (!questionData.replace_agent_name) return false;
-    const agentModel = agentName.split('_agent_')[0].toLowerCase();
-    const replacedModel = questionData.replace_agent_name.toLowerCase().replace(/_/g, '-');
-    return agentModel === replacedModel;
-  };
-
-  const convertFractionsToLatex = (text: string) => {
-    return text.replace(/\\frac\{(\d+)\}\{(\d+)\}/g, (_, numerator, denominator) => {
-      return `\\frac{${numerator}}{${denominator}}`;
-    }).replace(/\b(\d+)\/(\d+)\b/g, (_, numerator, denominator) => {
-      return `\\frac{${numerator}}{${denominator}}`;
-    });
-  };
+ const isReplacedAgent = (agentName: string): boolean => {
+  if (questionData.replaced_agent_specific_name) {
+    return agentName === questionData.replaced_agent_specific_name;
+  }  
+  if (!questionData.replace_agent_name) return false;
+  
+  const agentModel = agentName.split('_agent_')[0].toLowerCase();
+  const replacedModel = questionData.replace_agent_name.toLowerCase().replace(/_/g, '-');
+  return agentModel === replacedModel;
+};
 
   const renderLatex = (text: string) => {
     if (!katexLoaded || !(window as any).katex) {
       return <span>{text}</span>;
     }
 
+    // Enhanced regex to also match standalone LaTeX commands like \boxed{}, \frac{}{}, etc.
     const latexRegex =
-      /\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)|\$\$([\s\S]*?)\$\$|\$([^\$\n]+?)\$/g;
+      /\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)|\$\$([\s\S]*?)\$\$|\$([^\$\n]+?)\$|\\(?:boxed|frac|quad|text|sqrt|sum|int|infty|alpha|beta|gamma|delta|theta|pi|times|cdot|leq|geq|neq|approx)\{[^}]*\}(?:\{[^}]*\})?|\\(?:quad|qquad|,|;|!|left|right)/g;
 
     let lastIndex = 0;
     let match;
@@ -121,8 +118,12 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
         partKey += normalText.length;
       }
 
-      const latex = match[1] || match[2] || match[3] || match[4];
+      // Check if this is a delimited expression or standalone command
+      const latex = match[1] || match[2] || match[3] || match[4] || match[0];
       const isDisplay = !!(match[1] || match[3]);
+      
+      // If it's a standalone command (match[0] but no group matches), wrap it in inline math
+      const isStandaloneCommand = !match[1] && !match[2] && !match[3] && !match[4];
 
       try {
         const html = (window as any).katex.renderToString(latex, {
@@ -341,12 +342,12 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
                   fontWeight: "500",
                 }}
               >
-                {renderLatex(convertFractionsToLatex(questionData.question_text || ""))}
+                {(questionData.question_text || "")}
               </div>
             </div>
           )}
 
-          {/* NEW FORMAT: Previous Rounds with full context */}
+          {/* NEW FORMAT: Previous Rounds with Card-based styling */}
           {previousRoundsData && previousRoundsData.length > 0 && (
             <div style={{ marginBottom: "1.5rem" }}>
               <div style={{
@@ -430,8 +431,15 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
                         </span>
                       </div>
 
-                      <div style={{ backgroundColor: "white" }}>
-                        {Object.entries(responses).map(([agentName, response], idx) => {
+                      {/* CARD-BASED AGENT RESPONSES */}
+                      <div style={{ 
+                        padding: "1rem",
+                        backgroundColor: "#fafafa",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "1rem"
+                      }}>
+                        {Object.entries(responses).map(([agentName, response]) => {
                           const isYourPrevious = isReplacedAgent(agentName);
                           
                           return (
@@ -439,19 +447,23 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
                               key={agentName}
                               style={{
                                 padding: "1rem",
-                                borderBottom: idx < Object.keys(responses).length - 1 ? "1px solid #f3f4f6" : "none",
-                                backgroundColor: isYourPrevious ? "#eff6ff" : "white",
+                                backgroundColor: isYourPrevious ? "#eff6ff" : "#ffffff",
+                                border: isYourPrevious ? "2px solid #3b82f6" : "2px solid #e5e7eb",
+                                borderRadius: "0.5rem",
+                                boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1)",
                               }}
                             >
                               <div style={{
                                 display: "flex",
                                 alignItems: "center",
                                 gap: "0.5rem",
-                                marginBottom: "0.5rem",
+                                marginBottom: "0.75rem",
+                                paddingBottom: "0.5rem",
+                                borderBottom: isYourPrevious ? "2px solid #bfdbfe" : "2px solid #f3f4f6",
                               }}>
-                                <Bot size={14} style={{ color: isYourPrevious ? "#2563eb" : "#6b7280" }} />
+                                <Bot size={16} style={{ color: isYourPrevious ? "#2563eb" : "#6b7280" }} />
                                 <span style={{
-                                  fontSize: "0.8125rem",
+                                  fontSize: "0.875rem",
                                   fontWeight: "600",
                                   color: isYourPrevious ? "#1e40af" : "#374151",
                                 }}>
@@ -475,7 +487,6 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
                                 color: "#111827",
                                 lineHeight: "1.6",
                                 whiteSpace: "pre-wrap",
-                                paddingLeft: "1.25rem",
                               }}>
                                 {renderLatex(response)}
                               </div>
@@ -511,18 +522,23 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
                 style={{
                   maxHeight: "300px",
                   overflowY: "auto",
-                  border: "1px solid #e5e7eb",
-                  borderRadius: "0.5rem",
                   backgroundColor: "#fafafa",
+                  padding: "1rem",
+                  borderRadius: "0.5rem",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "1rem",
                 }}
               >
                 {questionData.previous_responses.map((resp, idx) => (
                   <div
                     key={idx}
                     style={{
-                      padding: "0.875rem",
-                      borderBottom: idx < questionData.previous_responses!.length - 1 ? "1px solid #e5e7eb" : "none",
-                      backgroundColor: idx % 2 === 0 ? "white" : "#fafafa",
+                      padding: "1rem",
+                      backgroundColor: "white",
+                      border: "2px solid #e5e7eb",
+                      borderRadius: "0.5rem",
+                      boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1)",
                     }}
                   >
                     <div style={{
@@ -571,49 +587,6 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
               onFocus={(e) => (e.target.style.borderColor = "#667eea")}
               onBlur={(e) => (e.target.style.borderColor = "#d1d5db")}
             />
-          </div>
-
-          {/* Extracted Answer Input */}
-          <div style={{ marginBottom: "1.5rem" }}>
-            <label
-              style={{
-                display: "block",
-                fontSize: "0.875rem",
-                fontWeight: "600",
-                color: "#374151",
-                marginBottom: "0.5rem",
-              }}
-            >
-              Final Answer
-            </label>
-            <input
-              type="text"
-              value={extractedAnswer}
-              onChange={(e) => setExtractedAnswer(e.target.value)}
-              placeholder='e.g., "10" or "A"'
-              style={{
-                width: "100%",
-                padding: "0.75rem",
-                border: "2px solid #d1d5db",
-                borderRadius: "0.5rem",
-                fontSize: "0.875rem",
-                fontFamily: "inherit",
-                outline: "none",
-                transition: "border-color 0.2s",
-              }}
-              onFocus={(e) => (e.target.style.borderColor = "#667eea")}
-              onBlur={(e) => (e.target.style.borderColor = "#d1d5db")}
-            />
-            <p
-              style={{
-                fontSize: "0.75rem",
-                color: "#6b7280",
-                marginTop: "0.25rem",
-              }}
-            >
-              Extract your final answer if applicable (e.g., for multiple
-              choice, enter just the letter like "A")
-            </p>
           </div>
 
           {/* Buttons */}

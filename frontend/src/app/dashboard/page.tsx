@@ -116,20 +116,61 @@ const Dashboard = () => {
       setLoading(false);
     }
   };
-  // Define types for better type safety
-  interface ParsedArgs {
-    [key: string]: unknown;
-    "experiment.num_rounds"?: number;
-    "experiment.num_questions"?: number;
-    agent_counts?: number[];
-    task?: string;
-  }
 
-  interface RunData {
-    wandb_metadata?: {
-      parsed_args?: ParsedArgs | ParsedArgs[];
-    };
-  }
+  // Helper function to get actual number of rounds from experiment data
+  const getActualNumRounds = (experiment: Experiment): number => {
+    // rawData contains runs array (one per seed)
+    if (experiment.rawData?.runs && Array.isArray(experiment.rawData.runs)) {
+      const firstRun = experiment.rawData.runs[0];
+      
+      // Try to get from result_data first (most reliable)
+      if (firstRun?.result_data?.[0]?.debate_session?.rounds) {
+        return firstRun.result_data[0].debate_session.rounds.length;
+      }
+      
+      // Fallback to parsed_args with checkpoint logic
+      const parsedArgs = firstRun?.wandb_metadata?.parsed_args || {};
+      const hasCheckpoint = parsedArgs["checkpoint.frequency"];
+      const configuredRounds = parsedArgs["experiment.num_rounds"] || 0;
+      
+      return hasCheckpoint ? configuredRounds + 1 : configuredRounds;
+    }
+    
+    // If rawData is a single run object (legacy format)
+    if (experiment.rawData?.result_data?.[0]?.debate_session?.rounds) {
+      return experiment.rawData.result_data[0].debate_session.rounds.length;
+    }
+    
+    // Final fallback
+    const parsedArgs = experiment.rawData?.wandb_metadata?.parsed_args || {};
+    const hasCheckpoint = parsedArgs["checkpoint.frequency"];
+    const configuredRounds = parsedArgs["experiment.num_rounds"] || 0;
+    
+    return hasCheckpoint ? configuredRounds + 1 : configuredRounds;
+  };
+
+  // Helper function to get actual number of agents
+  const getActualNumAgents = (experiment: Experiment): number => {
+    // rawData contains runs array (one per seed)
+    if (experiment.rawData?.runs && Array.isArray(experiment.rawData.runs)) {
+      const firstRun = experiment.rawData.runs[0];
+      
+      // Try to get from result_data first (most reliable)
+      if (firstRun?.result_data?.[0]?.debate_session?.rounds?.[0]?.responses) {
+        const responses = firstRun.result_data[0].debate_session.rounds[0].responses;
+        return Object.keys(responses).length;
+      }
+    }
+    
+    // If rawData is a single run object (legacy format)
+    if (experiment.rawData?.result_data?.[0]?.debate_session?.rounds?.[0]?.responses) {
+      const responses = experiment.rawData.result_data[0].debate_session.rounds[0].responses;
+      return Object.keys(responses).length;
+    }
+    
+    // Fallback to agents array length
+    return experiment.agents?.length || 0;
+  };
 
   const handleSeedChange = (experimentId: string, newSeed: string) => {
     setExperiments((prev) =>
@@ -165,6 +206,7 @@ const Dashboard = () => {
         : [...prev.participationTypes, type],
     }));
   };
+  
   // Update the availableDatasets array to match actual database values
   const availableDatasets = [
     "gsm8k",
@@ -268,13 +310,13 @@ const Dashboard = () => {
         if (!matchesParticipation) return false;
       }
 
-      // Number of rounds filter
-      if (filters.numRounds > 0 && exp.numRounds !== filters.numRounds) {
+      // Number of rounds filter - use actual rounds
+      if (filters.numRounds > 0 && getActualNumRounds(exp) !== filters.numRounds) {
         return false;
       }
 
-      // Number of agents filter
-      if (filters.numAgents > 0 && exp.numAgents !== filters.numAgents) {
+      // Number of agents filter - use actual agents
+      if (filters.numAgents > 0 && getActualNumAgents(exp) !== filters.numAgents) {
         return false;
       }
 
@@ -285,6 +327,7 @@ const Dashboard = () => {
   const clearFilters = () => {
     setFilters(getInitialFilters());
   };
+  
   const hasActiveFilters = () => {
     return (
       filters.searchTerm !== "" ||
@@ -300,9 +343,11 @@ const Dashboard = () => {
   const handleNewExperiment = () => {
     router.push(`/debate/new`);
   };
+  
   const handleDebugger = () => {
     router.push(`/debate/debug`);
   };
+  
   const handleViewExperiment = (experiment: Experiment) => {
     router.push(`/debate/${experiment.id}?seed=${experiment.selectedSeed}`);
   };
@@ -377,16 +422,6 @@ const Dashboard = () => {
                 size="md"
                 iconColor="white"
               ></Button>
-
-              {/* <Button
-                onClick={handleLogout}
-                buttonStyle="regular"
-                label="Logout"
-                icon={LogOut}
-                size="md"
-                iconPosition="start"
-                className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2.5 rounded-xl font-medium transition-all duration-200 flex items-center space-x-2"
-              ></Button> */}
             </div>
           </div>
         </div>
@@ -544,6 +579,7 @@ const Dashboard = () => {
             </div>
           )}
         </div>
+        
         <div className="flex items-center justify-between mb-6">
           <p className="text-slate-600 font-medium">
             Showing{" "}
@@ -688,15 +724,15 @@ const Dashboard = () => {
                       <div className="flex items-center text-sm text-gray-600">
                         <User className="w-4 h-4 mr-2 text-blue-500" />
                         <span className="font-medium">
-                          {experiment.numAgents}{" "}
-                          {experiment.numAgents === 1 ? "agent" : "agents"}
+                          {getActualNumAgents(experiment)}{" "}
+                          {getActualNumAgents(experiment) === 1 ? "agent" : "agents"}
                         </span>
                       </div>
                       <div className="flex items-center text-sm text-gray-600">
                         <Clock className="w-4 h-4 mr-2 text-green-500" />
                         <span className="font-medium">
-                          {experiment.numRounds}{" "}
-                          {experiment.numRounds === 1 ? "round" : "rounds"}
+                          {getActualNumRounds(experiment)}{" "}
+                          {getActualNumRounds(experiment) === 1 ? "round" : "rounds"}
                         </span>
                       </div>
                       <div className="flex items-center text-sm text-gray-600">

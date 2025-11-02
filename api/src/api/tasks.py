@@ -46,7 +46,7 @@ def get_or_create_orchestrator(debate_id: str) -> BasicDebateOrchestrator:
     if debate_id in ACTIVE_ORCHESTRATORS:
         orchestrator, _ = ACTIVE_ORCHESTRATORS[debate_id]
         ACTIVE_ORCHESTRATORS[debate_id] = (orchestrator, time.time())
-        logger.info(f"♻️ Reusing existing orchestrator for debate {debate_id}")
+        logger.info(f"Reusing existing orchestrator for debate {debate_id}")
         return orchestrator
     
     orchestrator = BasicDebateOrchestrator()
@@ -179,6 +179,51 @@ def run_replay_task(
         remove_orchestrator(debate_id)
         raise
 
+def get_config_name_from_model(model_config: dict) -> str:
+    """
+    Extract the correct Hydra config name from a model config object.
+    Maps API model names to actual YAML config file names.
+    """
+    model_name = model_config.get("modelName") or model_config.get("model", "")
+    api_base = model_config.get("apiBase")
+    
+    # Normalize the model name
+    normalized = model_name.lower().replace("-", "_").replace(".", "_")
+    
+    # If it has a custom api_base, it's likely a vLLM/local model
+    if api_base and api_base not in ["https://api.openai.com/v1", None]:
+        # Map to vec_ (vLLM) configs
+        if "llama" in normalized and "3" in normalized and "8b" in normalized:
+            return "vec_llama_3_1_8B"
+        elif "mistral" in normalized and "7b" in normalized:
+            return "vec_mistral_7B"
+    
+    # Standard OpenAI models
+    if "gpt_4o_mini" in normalized or "gpt_4o_mini" in normalized:
+        return "gpt_4o_mini"
+    elif "gpt_3_5_turbo" in normalized:
+        return "gpt_3_5_turbo"
+    
+    # Llama models (check for vLLM prefix or custom api_base)
+    if "llama" in normalized and "3" in normalized and "8b" in normalized:
+        if normalized.startswith("vec_") or api_base:
+            return "vec_llama_3_1_8B"
+        return "llama_3_1_8B"
+    
+    # Mistral models
+    if "mistral" in normalized and "7b" in normalized:
+        if normalized.startswith("vec_") or api_base:
+            return "vec_mistral_7B"
+        return "mistral_7B"
+    
+    # Human participant
+    if "human" in normalized:
+        return "human-participant"
+    
+    logger.warning(f"Could not map model config to known config name: {model_config}")
+    return normalized
+
+
 async def _run_replay_async(
     debate_id: str,
     original_config: dict,
@@ -207,66 +252,83 @@ async def _run_replay_async(
     human_ready_queue = None
     
     try:
-        # Reconstruct from wandb_metadata directly
-        wandb_metadata = original_config.get("wandb_metadata", {})
-        parsed_args = wandb_metadata.get("parsed_args", {})
-        
-        # Build agent_models list from parsed_args
+        llm_configs_from_original = original_config.get("llm_conf", [])  
+        agent_counts_dict = original_config.get("agent_counts", {})
+        logger.info(f"Agent counts from original config: {agent_counts_dict}")
+        aggregated_counts = {}
+        for key, count in agent_counts_dict.items():
+            base_model = key.rsplit('_agent_', 1)[0] if '_agent_' in key else key
+            aggregated_counts[base_model] = aggregated_counts.get(base_model, 0) + count
+        logger.info(f"Aggregated counts by model: {aggregated_counts}")
         agent_models = []
-
-        # Extract llm configs from parsed_args
-        llm_configs = {}
-        for key, value in parsed_args.items():
-            if key.startswith('llm_conf@'):
-                llm_key = key.split('@')[1]
-                llm_configs[llm_key] = value
-
-        # Extract agent counts
-        agent_counts = {}
-        for key, value in parsed_args.items():
-            if key.startswith('agent_counts.'):
-                idx = key.split('.')[1]
-                agent_counts[idx] = value
-
-        logger.info(f"Found LLM configs: {llm_configs}")
-        logger.info(f"Found agent counts: {agent_counts}")
-
-        # Reconstruct agent_models list
-        for idx in sorted(agent_counts.keys()):
-            count = agent_counts[idx]
-            llm_key = f"llm{int(idx) + 1}"
+        for llm_config in llm_configs_from_original:
+            model_name = llm_config.get("modelName") or llm_config.get("model")
+            config_name = get_config_name_from_model(llm_config)
+            logger.info(f"Mapped {model_name} -> {config_name}")
             
-            if llm_key in llm_configs and count > 0:
-                model_name = llm_configs[llm_key]
-                for _ in range(count):
-                    agent_models.append(model_name)
-                logger.info(f"Added {count} agents of type {model_name}")
-
-        # If we still don't have agents, try total_agents fallback
+            count = aggregated_counts.get(model_name, 1)
+            logger.info(f"Adding {count} instances of {config_name}")
+            for _ in range(count):
+                agent_models.append(config_name)
         if not agent_models:
-            total_agents = parsed_args.get('total_agents', 0)
-            if total_agents > 0 and llm_configs:
-                llm_list = list(llm_configs.values())
-                agents_per_model = total_agents // len(llm_list)
-                remainder = total_agents % len(llm_list)
+            raise ValueError(f"Could not reconstruct agent_models from config")
                 
-                for idx, model in enumerate(llm_list):
-                    count = agents_per_model + (1 if idx < remainder else 0)
-                    for _ in range(count):
-                        agent_models.append(model)
-                
-                logger.warning(f"Reconstructed {len(agent_models)} agents from total_agents")
-
-        if not agent_models:
-            raise ValueError(f"Could not reconstruct agent_models from wandb_metadata: {parsed_args}")
-
         logger.info(f"Reconstructed agent_models: {agent_models}")
         
         # Find human_agent_index if using name
         if human_agent_index is None and replace_agent_name:
-            human_agent_index = _find_agent_index_by_name(agent_models, replace_agent_name)
-            if human_agent_index is None:
-                raise ValueError(f"Agent '{replace_agent_name}' not found in {agent_models}")
+            logger.info(f"Looking for agent: '{replace_agent_name}'")
+            
+            # Extract base model name and agent number from replace_agent_name
+            if '_agent_' in replace_agent_name:
+                base_model_name, agent_num_str = replace_agent_name.rsplit('_agent_', 1)
+                agent_num = int(agent_num_str)
+                logger.info(f"Parsed: base_model='{base_model_name}', agent_num={agent_num}")
+                
+                # Find the matching model in agent_counts_dict that starts with base_model_name
+                # This handles cases where agent name is 'llama-3.1-8b' but model is 'llama-3.1-8b-chat'
+                matching_model = None
+                for key in agent_counts_dict.keys():
+                    key_base = key.rsplit('_agent_', 1)[0] if '_agent_' in key else key
+                    if key_base.startswith(base_model_name):
+                        matching_model = key_base
+                        break
+                
+                if matching_model is None:
+                    raise ValueError(f"Could not find model starting with '{base_model_name}' in agent_counts")
+                
+                logger.info(f"Matched '{base_model_name}' to '{matching_model}'")
+                
+                # Find the matching llm_config to get the config_name
+                target_config_name = None
+                for llm_config in llm_configs_from_original:
+                    model_name = llm_config.get("modelName") or llm_config.get("model")
+                    if model_name == matching_model:
+                        target_config_name = get_config_name_from_model(llm_config)
+                        break
+                
+                if target_config_name is None:
+                    raise ValueError(f"Could not find model '{matching_model}' in llm_conf")
+                
+                logger.info(f"Target config name: '{target_config_name}'")
+                
+                # Find the Nth occurrence of this config_name in agent_models
+                occurrence = 0
+                for idx, model in enumerate(agent_models):
+                    if model == target_config_name:
+                        if occurrence == agent_num:
+                            human_agent_index = idx
+                            logger.info(f"Found at index {idx}")
+                            break
+                        occurrence += 1
+                
+                if human_agent_index is None:
+                    raise ValueError(f"Agent '{replace_agent_name}' (occurrence {agent_num} of '{target_config_name}') not found in {agent_models}")
+            else:
+                # Fallback to original logic if no _agent_ suffix
+                human_agent_index = _find_agent_index_by_name(agent_models, replace_agent_name)
+                if human_agent_index is None:
+                    raise ValueError(f"Agent '{replace_agent_name}' not found in {agent_models}")
         
         # Replace the agent with human
         if human_agent_index is not None:
@@ -282,13 +344,19 @@ async def _run_replay_async(
         logger.info(f"Agent models: {agent_models}")
         logger.info("=" * 80)
         
-        # Build Hydra config from the reconstructed agent_models
+        # Build Hydra config
         hydra_cfg = _build_hydra_config_for_replay_simple(
             original_config=original_config,
             agent_models=agent_models,
             num_rounds=num_rounds,
             experiment_name=experiment_name
         )
+
+        if llm_configs_from_original:
+            hydra_cfg['llm_conf'] = llm_configs_from_original
+            logger.info(f"Injected {len(llm_configs_from_original)} full LLM configs into hydra_cfg")
+            for i, conf in enumerate(llm_configs_from_original):
+                logger.info(f"  Config {i}: {conf.get('modelName')} at {conf.get('apiBase', 'default')}")
         
         # Setup RabbitMQ for human participant
         connection = await aio_pika.connect_robust(rabbitmq_url)
@@ -318,7 +386,7 @@ async def _run_replay_async(
         
         logger.info(f"Setup RabbitMQ queues for replay debate {debate_id}")
         
-        # Initialize orchestrator
+        # Initialize orchestrator with full config
         if orchestrator.status == "initialized":
             await orchestrator.initialize_from_hydra(
                 debate_id=uuid.UUID(debate_id),
@@ -370,24 +438,22 @@ async def _run_replay_async(
                 except Exception as e:
                     logger.error(f"Error in queue iterator: {e}", exc_info=True)
                     return False
-                
                 return False
             
-            # Wait with timeout
             try:
                 logger.info("Starting to wait for ready message with 600s timeout...")
                 ready = await asyncio.wait_for(wait_for_ready_message(), timeout=600)
                 
                 if ready:
-                    logger.info(f"✓✓✓ Human participant connected for replay {debate_id}")
-                    logger.info(f"✓✓✓ Proceeding with replay execution")
+                    logger.info(f"Human participant connected for replay {debate_id}")
+                    logger.info(f"Proceeding with replay execution")
                 else:
                     raise Exception("Failed to receive valid ready signal")
                     
             except asyncio.TimeoutError:
                 logger.error(f"Timeout waiting for human connection after 600 seconds")
                 logger.error(f"Queue name: {human_ready_queue.name}")
-                raise Exception("Human participant did not connect within timeout")
+                return None
                 
         except Exception as e:
             logger.error(f"Error waiting for human connection: {e}", exc_info=True)
@@ -408,144 +474,235 @@ async def _run_replay_async(
                 debate_id, question_data, num_rounds
             )
             orchestrator.current_question_session_id = question_session.id
-            if previous_rounds and start_from_round > 0:
-                logger.info(f"Restoring {len(previous_rounds)} previous round(s) to agent history")
-                
-                for prev_round_idx in range(start_from_round):
-                    if prev_round_idx < len(previous_rounds):
-                        prev_round_data = previous_rounds[prev_round_idx]
-                        prev_responses = prev_round_data.get('responses', {})
+
+        if previous_rounds and start_from_round > 0:
+            logger.info(f"Restoring {len(previous_rounds)} previous round(s) to agent history")
+            
+            for prev_round_idx in range(start_from_round):
+                if prev_round_idx < len(previous_rounds):
+                    prev_round_data = previous_rounds[prev_round_idx]
+                    prev_responses = prev_round_data.get('responses', {})
+                    
+                    logger.info(f"=== RESTORING ROUND {prev_round_idx} ===")
+                    logger.info(f"Available responses: {list(prev_responses.keys())}")
+                    logger.info(f"Number of agents to restore to: {len(orchestrator.agents)}")
+                    
+                    # Build map of original agent names
+                    original_agent_order = list(prev_responses.keys())
+                    logger.info(f"Original agent order: {original_agent_order}")
+                    
+                    # Track which original responses we've used
+                    used_original_responses = set()
+                    
+                    # Match each current agent to an original agent
+                    for agent_idx, agent in enumerate(orchestrator.agents):
+                        logger.info(f"Processing agent {agent_idx}: {agent.name}")
+                        agent_response = None
+                        matched_original_name = None
                         
-                        logger.info(f"=== RESTORING ROUND {prev_round_idx} ===")
-                        logger.info(f"Available responses: {list(prev_responses.keys())}")
-                        logger.info(f"Number of agents to restore to: {len(orchestrator.agents)}")                        
-                        used_prev_responses = set()                        
-                        for agent_idx, agent in enumerate(orchestrator.agents):
-                            logger.info(f"Processing agent {agent_idx}: {agent.name}")
-                            agent_response = None
-                            curr_model = agent.name.split('_agent_')[0]
-                            curr_normalized = normalize_model_name(curr_model)
+                        if agent_idx == human_agent_index:
+                            # This is the human agent - find the ORIGINAL agent it replaced
+                            logger.info(f"  Human agent at position {agent_idx}")
+                            logger.info(f"  Looking for original agent: {replace_agent_name}")
                             
-                            logger.info(f"  Matching agent {agent_idx} ({agent.name}, normalized: {curr_normalized})")                            
-                            if agent_idx == human_agent_index and replace_agent_name:
-                                target_normalized = normalize_model_name(replace_agent_name)
-                                logger.info(f"    Looking for replaced agent: {replace_agent_name} (normalized: {target_normalized})")
+                            # The replace_agent_name should exactly match one of the original agents
+                            if replace_agent_name in prev_responses:
+                                agent_response = prev_responses[replace_agent_name]
+                                matched_original_name = replace_agent_name
+                                used_original_responses.add(replace_agent_name)
+                                logger.info(f"  ✓ Found exact match: {replace_agent_name}")
+                            else:
+                                # Try fuzzy matching if exact match fails
+                                target_base = replace_agent_name.split('_agent_')[0] if '_agent_' in replace_agent_name else replace_agent_name
+                                target_num = int(replace_agent_name.split('_agent_')[1]) if '_agent_' in replace_agent_name else 0
+                                target_normalized = normalize_model_name(target_base)
                                 
-                                for prev_agent_name, prev_response in prev_responses.items():
-                                    if prev_agent_name in used_prev_responses:
+                                logger.info(f"  Trying fuzzy match: base={target_base}, num={target_num}, normalized={target_normalized}")
+                                
+                                for orig_name in original_agent_order:
+                                    if orig_name in used_original_responses:
                                         continue
-                                        
-                                    prev_model = prev_agent_name.split('_agent_')[0]
-                                    prev_normalized = normalize_model_name(prev_model)
                                     
-                                    logger.info(f"      Checking {prev_agent_name} (normalized: {prev_normalized})")
+                                    orig_base = orig_name.split('_agent_')[0] if '_agent_' in orig_name else orig_name
+                                    orig_num = int(orig_name.split('_agent_')[1]) if '_agent_' in orig_name else 0
+                                    orig_normalized = normalize_model_name(orig_base)
                                     
-                                    if prev_normalized == target_normalized:
-                                        agent_response = prev_response
-                                        used_prev_responses.add(prev_agent_name)
-                                        logger.info(f"    ✓ Found response for human replacement (matched {prev_agent_name})")
+                                    logger.info(f"    Comparing with {orig_name}: base={orig_base}, num={orig_num}, normalized={orig_normalized}")
+                                    
+                                    if orig_normalized == target_normalized and orig_num == target_num:
+                                        agent_response = prev_responses[orig_name]
+                                        matched_original_name = orig_name
+                                        used_original_responses.add(orig_name)
+                                        logger.info(f"  ✓ Fuzzy matched to: {orig_name}")
                                         break
-                            
-                            # Strategy 2: Match by model type AND position (for non-human agents)
-                            if not agent_response and curr_normalized != 'human-participant':
-                                logger.info(f"    Looking for AI agent of type: {curr_normalized}")
-                                
-                                # Get the model being replaced to exclude it
-                                replace_normalized = normalize_model_name(replace_agent_name) if replace_agent_name else None
-                                
-                                # Count how many agents of this type we've already matched
-                                # This ensures we match the Nth agent to the Nth previous response
-                                same_type_count = sum(
-                                    1 for i in range(agent_idx) 
-                                    if normalize_model_name(orchestrator.agents[i].name.split('_agent_')[0]) == curr_normalized
-                                )
-                                
-                                logger.info(f"    This is the {same_type_count + 1}th agent of type {curr_normalized}")
-                                
-                                # Find the Nth unused response of the same type
-                                found_count = 0
-                                for prev_agent_name, prev_response in prev_responses.items():
-                                    if prev_agent_name in used_prev_responses:
-                                        continue
-                                        
-                                    prev_model = prev_agent_name.split('_agent_')[0]
-                                    prev_normalized = normalize_model_name(prev_model)
-                                    
-                                    logger.info(f"      Checking {prev_agent_name} (normalized: {prev_normalized})")
-                                    
-                                    # Match by model type, but skip the agent being replaced
-                                    if prev_normalized == curr_normalized and prev_normalized != replace_normalized:
-                                        if found_count == same_type_count:
-                                            agent_response = prev_response
-                                            used_prev_responses.add(prev_agent_name)
-                                            logger.info(f"    ✓ Found response by position match (matched {prev_agent_name})")
-                                            break
-                                        else:
-                                            found_count += 1
-                                            logger.info(f"      Skipping (looking for position {same_type_count}, this is {found_count - 1})")
                                 
                                 if not agent_response:
-                                    logger.warning(f"    ✗ No match found for {agent.name}")
-                                    logger.warning(f"      Available agents: {[normalize_model_name(n.split('_agent_')[0]) for n in prev_responses.keys() if n not in used_prev_responses]}")
+                                    logger.error(f"  ✗ Could not find original agent {replace_agent_name}")
+                        
+                        else:
+                            # Regular AI agent - match by model type and instance number
+                            curr_base = agent.name.split('_agent_')[0]
+                            curr_num = int(agent.name.split('_agent_')[1]) if '_agent_' in agent.name else 0
+                            curr_normalized = normalize_model_name(curr_base)
                             
-                            # Add to agent history if found
-                            if agent_response:
-                                if hasattr(agent, 'answer_history'):
-                                    agent.answer_history.append(agent_response)
-                                    logger.info(f"  ✓ Restored to {agent.name}, history now: {len(agent.answer_history)}")
-                                else:
-                                    logger.error(f"  ✗ Agent {agent.name} missing answer_history!")
-                            else:
+                            logger.info(f"  AI agent: base={curr_base}, num={curr_num}, normalized={curr_normalized}")
+                            
+                            # Find matching original agent
+                            for orig_name in original_agent_order:
+                                if orig_name in used_original_responses:
+                                    continue
+                                
+                                orig_base = orig_name.split('_agent_')[0] if '_agent_' in orig_name else orig_name
+                                orig_num = int(orig_name.split('_agent_')[1]) if '_agent_' in orig_name else 0
+                                orig_normalized = normalize_model_name(orig_base)
+                                
+                                if orig_normalized == curr_normalized and orig_num == curr_num:
+                                    agent_response = prev_responses[orig_name]
+                                    matched_original_name = orig_name
+                                    used_original_responses.add(orig_name)
+                                    logger.info(f"  ✓ Matched to: {orig_name}")
+                                    break
+                            
+                            if not agent_response:
                                 logger.warning(f"  ✗ No match found for {agent.name}")
-                
-                logger.info(f"✓ Restored previous rounds. Final agent histories:")
-                for agent in orchestrator.agents:
-                    if hasattr(agent, 'answer_history'):
-                        logger.info(f"  {agent.name}: {len(agent.answer_history)} previous responses")
-                    else:
-                        logger.info(f"  {agent.name}: NO answer_history attribute")
-
+                        
+                        # Add to agent history if found
+                        if agent_response:
+                            if hasattr(agent, 'answer_history'):
+                                agent.answer_history.append(agent_response)
+                                logger.info(f"  ✓ Restored response to {agent.name}, history now: {len(agent.answer_history)}")
+                                logger.info(f"    Response preview: {agent_response[:100]}...")
+                            else:
+                                logger.error(f"  ✗ Agent {agent.name} missing answer_history!")
+            
+            logger.info(f"✓ Restored previous rounds. Final agent histories:")
+            for agent in orchestrator.agents:
+                if hasattr(agent, 'answer_history'):
+                    logger.info(f"  {agent.name}: {len(agent.answer_history)} previous responses")
+                else:
+                    logger.info(f"  {agent.name}: NO answer_history attribute")
+            
+            replayed_rounds_responses = {}
+            # Then modify the round loop section:
             for round_num in range(start_from_round, num_rounds):
                 update_orchestrator_activity(debate_id)
                 logger.info(f"Replaying round {round_num} for question {question_idx}")
 
-                # Build context from completed rounds
+                # Build context from BOTH original previous rounds AND replayed rounds
                 all_previous_rounds = {}
-                actual_completed_rounds = 0
-                if orchestrator.agents and hasattr(orchestrator.agents[0], 'answer_history'):
-                    actual_completed_rounds = len(orchestrator.agents[0].answer_history)
-
-                logger.info(f"Building context from {actual_completed_rounds} completed rounds")
-
-                for prev_round_idx in range(actual_completed_rounds):
+                
+                logger.info(f"previous_rounds type: {type(previous_rounds)}, length: {len(previous_rounds) if previous_rounds else 0}")
+                logger.info(f"replayed_rounds_responses keys: {list(replayed_rounds_responses.keys())}")
+                
+                # Show all rounds that happened before the current round
+                for prev_round_idx in range(round_num):
                     round_key = f"round_{prev_round_idx}"
-                    all_previous_rounds[round_key] = {}
                     
-                    for agent in orchestrator.agents:
-                        if hasattr(agent, 'answer_history') and len(agent.answer_history) > prev_round_idx:
-                            display_name = agent.name
-                            
-                            if agent.name == orchestrator.human_agent_name and replace_agent_name:
-                                display_name = f"{replace_agent_name}_agent_0"
-                            
-                            response = agent.answer_history[prev_round_idx]
-                            all_previous_rounds[round_key][display_name] = response
-                            logger.info(f"  Round {prev_round_idx} - {display_name}: {response[:80]}...")
-                        else:
-                            logger.warning(f"  Round {prev_round_idx} - {agent.name}: No response")
+                    # Check if this round was from the original debate (before replay started)
+                    if prev_round_idx < start_from_round and previous_rounds and prev_round_idx < len(previous_rounds):
+                        # This is an ORIGINAL round - use data from previous_rounds
+                        prev_round_data = previous_rounds[prev_round_idx]
+                        prev_responses = prev_round_data.get('responses', {})
+                        
+                        logger.info(f"Round {prev_round_idx} (ORIGINAL) has {len(prev_responses)} responses: {list(prev_responses.keys())}")
+                        
+                        all_previous_rounds[round_key] = prev_responses
+                        for agent_name, response in prev_responses.items():
+                            logger.info(f"  Showing round {prev_round_idx} (ORIGINAL) - {agent_name}: {response[:80]}...")
+                    
+                    elif prev_round_idx >= start_from_round and prev_round_idx in replayed_rounds_responses:
+                        # This is a REPLAYED round - use data from our replay session
+                        prev_responses = replayed_rounds_responses[prev_round_idx]
+                        
+                        logger.info(f"Round {prev_round_idx} (REPLAYED) has {len(prev_responses)} responses: {list(prev_responses.keys())}")
+                        
+                        all_previous_rounds[round_key] = prev_responses
+                        for agent_name, response in prev_responses.items():
+                            logger.info(f"  Showing round {prev_round_idx} (REPLAYED) - {agent_name}: {response[:80]}...")
+                    else:
+                        logger.warning(f"Round {prev_round_idx} not found in previous_rounds or replayed_rounds_responses")
+                
+                logger.info(f"Showing {len(all_previous_rounds)} previous rounds total")
+                logger.info(f"all_previous_rounds keys: {list(all_previous_rounds.keys())}")
 
-                logger.info(f"Showing {len(all_previous_rounds)} previous rounds to human")
+                # Determine the exact replaced agent name by finding it in the FIRST round's responses
+                replaced_agent_specific_name = None
+                
+                # Check if replace_agent_name is already a specific agent name (contains "_agent_")
+                if replace_agent_name and "_agent_" in replace_agent_name:
+                    replaced_agent_specific_name = replace_agent_name
+                    logger.info(f"Using provided specific agent name: {replaced_agent_specific_name}")
+                else:
+                    # Find the specific agent instance from the first available round
+                    first_round_responses = None
+                    
+                    # Try to get from original previous_rounds first
+                    if previous_rounds and len(previous_rounds) > 0:
+                        first_round_responses = previous_rounds[0].get('responses', {})
+                    # Otherwise try replayed rounds
+                    elif start_from_round in replayed_rounds_responses:
+                        first_round_responses = replayed_rounds_responses[start_from_round]
+                    
+                    if first_round_responses and replace_agent_name:
+                        target_normalized = normalize_model_name(replace_agent_name)
+                        
+                        # Find ALL agents matching the model type
+                        matching_agents = []
+                        for agent_name in first_round_responses.keys():
+                            agent_model = agent_name.split('_agent_')[0] if '_agent_' in agent_name else agent_name
+                            agent_normalized = normalize_model_name(agent_model)
+                            if agent_normalized == target_normalized:
+                                matching_agents.append(agent_name)
+                        
+                        logger.info(f"Found {len(matching_agents)} agents matching '{replace_agent_name}': {matching_agents}")
+                        
+                        # Use the one at human_agent_index
+                        if matching_agents:
+                            # Map current agent index to original agent name
+                            # We need to find which of the matching agents corresponds to human_agent_index
+                            
+                            # Build a mapping of current agent positions to original agent names
+                            current_to_original = {}
+                            curr_idx = 0
+                            
+                            # Sort matching agents to maintain consistent ordering
+                            matching_agents_sorted = sorted(matching_agents)
+                            
+                            for orig_name in sorted(first_round_responses.keys()):
+                                orig_base = orig_name.split('_agent_')[0] if '_agent_' in orig_name else orig_name
+                                orig_normalized = normalize_model_name(orig_base)
+                                
+                                # Check if this original agent is still in the current config
+                                # (i.e., not replaced by human)
+                                if curr_idx < len(agent_models):
+                                    curr_model = agent_models[curr_idx]
+                                    if curr_model == "human-participant":
+                                        # This position has the human - map it to the original agent
+                                        current_to_original[curr_idx] = orig_name
+                                        curr_idx += 1
+                                        break
+                                    curr_idx += 1
+                            
+                            # If we found a mapping for human_agent_index, use it
+                            if human_agent_index in current_to_original:
+                                replaced_agent_specific_name = current_to_original[human_agent_index]
+                                logger.info(f"Mapped human_agent_index {human_agent_index} to original agent: {replaced_agent_specific_name}")
+                            elif matching_agents_sorted:
+                                # Fallback: use the first matching agent
+                                replaced_agent_specific_name = matching_agents_sorted[0]
+                                logger.info(f"Fallback: using first matching agent: {replaced_agent_specific_name}")
 
-                # Broadcast waiting_for_human event
+                # Broadcast waiting_for_human event with ALL previous responses (original + replayed)
                 await _broadcast_debate_event(debate_id, "waiting_for_human", {
                     "question_index": question_idx,
                     "round_number": round_num,
                     "question_text": question_text,
-                    "previous_rounds": all_previous_rounds,
-                    "replace_agent_name": replace_agent_name 
+                    "previous_rounds": all_previous_rounds,  # Contains BOTH original AND replayed responses
+                    "replace_agent_name": replace_agent_name,
+                    "replaced_agent_specific_name": replaced_agent_specific_name
                 })
-                # Wait for human response
                 logger.info(f"Waiting for human response - round {round_num}")
+                
                 try:
                     async def wait_for_human_response():
                         """Consume messages until we get a valid response."""
@@ -574,17 +731,15 @@ async def _run_replay_async(
                     logger.info(f"Received human response")
                     update_orchestrator_activity(debate_id)
                     
-                    # Add to human agent's history
                     if orchestrator.human_agent_name:
                         human_agent = orchestrator.agents[human_agent_index]
                         if hasattr(human_agent, 'answer_history'):
                             human_agent.answer_history.append(human_response)
                     
                 except asyncio.TimeoutError:
-                    logger.error(f"Timeout waiting for human response")
-                    raise
+                    logger.warning("Timeout waiting for human response — ending task gracefully")
+                    return {"status": "timeout", "message": "No human response received within 5 minutes"}
 
-                # Execute round with AI agents (human already responded)
                 round_result = await orchestrator._run_debate_round(
                     question=question_text,
                     question_prompt=question_prompt,
@@ -595,6 +750,10 @@ async def _run_replay_async(
                 # Add human response to round result
                 if orchestrator.human_agent_name:
                     round_result.add_response(orchestrator.human_agent_name, human_response)
+                
+                # Store this round's responses for future rounds to reference
+                replayed_rounds_responses[round_num] = round_result.responses.copy()
+                logger.info(f"Stored round {round_num} responses for future reference: {list(round_result.responses.keys())}")
 
                 await _broadcast_debate_event(debate_id, "round_replayed", {
                     "question_index": question_idx,

@@ -139,7 +139,13 @@ class BasicDebateAgent(BaseAgent):
         if not response:
             return ""
         import re
- 
+        
+        # CRITICAL: Check for #### pattern first (used in math problem answers)
+        final_answer_match = re.search(r'####\s*([+-]?\d+\.?\d*)', response)
+        if final_answer_match:
+            return final_answer_match.group(1).strip()
+        
+        # Check for (X) patterns (multiple choice)
         final_answer_patterns = [
             r'\(X\)\s*([A-E])\)',           # (X) C)
             r'\(X\)\s*\(([A-E])\)',         # (X) (C)
@@ -147,14 +153,16 @@ class BasicDebateAgent(BaseAgent):
         ]
         
         for pattern in final_answer_patterns:
-            final_answer_match = re.search(pattern, response, re.IGNORECASE)
-            if final_answer_match:
-                return final_answer_match.group(1).strip().upper()
+            match = re.search(pattern, response, re.IGNORECASE)
+            if match:
+                return match.group(1).strip().upper()
         
+        # Check for boxed answers
         boxed_match = re.search(r'\\boxed\{([^}]+)\}', response)
         if boxed_match:
             return boxed_match.group(1).strip()
         
+        # Other patterns
         patterns = [
             r'(?:the )?(?:final )?answer is[:\s]+\(?([A-E])\)?',
             r'(?:the )?(?:final )?answer is[:\s]+([^\n\.]+)',
