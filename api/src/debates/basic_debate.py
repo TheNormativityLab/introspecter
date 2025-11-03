@@ -30,11 +30,6 @@ def normalize_model_name(model_name: str) -> str:
     """
     Normalize model names for consistent matching.
     Always converts to hyphen format to match actual model names.
-    
-    Examples:
-        gpt_4o_mini -> gpt-4o-mini
-        gpt_3_5_turbo -> gpt-3.5-turbo
-        gpt-4o-mini -> gpt-4o-mini (unchanged)
     """
     if not model_name:
         return ""
@@ -81,10 +76,6 @@ class BasicDebateOrchestrator:
     ):
         """
         Initialize orchestrator from Hydra config.
-        
-        Args:
-            agent_models: List of model config names in exact order 
-                        (e.g., ['gpt_4o_mini', 'human-participant', 'gpt_4o_mini'])
         """
         self.debate_id = debate_id
         self.questions = questions
@@ -130,7 +121,6 @@ class BasicDebateOrchestrator:
     ) -> List[BasicDebateAgent]:
         """
         Create agents in the exact order specified by agent_models.
-        FIXED: Properly maps agents to their LLM configs with fallback handling.
         """
         task_config = hydra_cfg.get("task", {})
         task = task_config.get("name", "unknown")
@@ -139,11 +129,10 @@ class BasicDebateOrchestrator:
         task_partials = hydra_cfg.get("task", {}).get("partials") or {}
         
         prompts = {
-            "system_prompt": agent_prompts.get("system_prompt", "You are a helpful assistant."),
+            "system_prompt": agent_prompts.get("system_prompt", "You are a helpful assistant that can answer questions and provide helpful information."),
             "partials": {**(agent_prompts.get("partials") or {}), **task_partials},
         }
         
-        # Get all available LLM configs
         available_llm_configs = []
         llm_config_keys = []
         for i in range(1, 4):
@@ -209,7 +198,7 @@ class BasicDebateOrchestrator:
                 agent = BasicDebateAgent(
                     config=AgentConfig(
                         prompt_config=PromptConfig(
-                            system_prompt=prompts.get("system_prompt", "You are a helpful assistant."),
+                            system_prompt=prompts.get("system_prompt", "You are a helpful assistant that can answer questions and provide helpful information."),
                             partials=prompts.get("partials", {}),
                         ),
                         llm_config=None,
@@ -232,48 +221,39 @@ class BasicDebateOrchestrator:
                 }
                 self.agent_name_map[agent.name] = agent
                 
-                logger.info(f"✓ Created human agent at position {agent_idx}: {agent.name}")
+                logger.info(f"Created human agent at position {agent_idx}: {agent.name}")
                 
             else:
-                # For AI agents, we need to find the RIGHT config
                 normalized_model = normalize_model_name(model_name)
                 
-                # Initialize usage counter for this model if needed
                 if normalized_model not in model_to_config_usage:
                     model_to_config_usage[normalized_model] = 0
                 
-                # Get the agent number for this model type (0-indexed)
                 agent_num_for_model = model_to_config_usage[normalized_model]
                 model_to_config_usage[normalized_model] += 1
                 
-                # Build agent name (preserve original format for consistency)
                 agent_name = f"{model_name}_agent_{agent_num_for_model}"
                 
-                # Find matching config with multiple strategies
                 llm_config_dict = None
                 
-                # Strategy 1: Direct lookup by normalized name
                 if normalized_model in model_to_config:
                     llm_config_dict = model_to_config[normalized_model]
-                    logger.info(f"  ✓ Found config via direct match: {normalized_model}")
+                    logger.info(f"Found config via direct match: {normalized_model}")
                 
-                # Strategy 2: Try without vec- prefix
                 if not llm_config_dict and normalized_model.startswith('vec-'):
                     without_vec = normalized_model[4:]
                     if without_vec in model_to_config:
                         llm_config_dict = model_to_config[without_vec]
-                        logger.info(f"  ✓ Found config via vec- removal: {without_vec}")
+                        logger.info(f"Found config via vec- removal: {without_vec}")
                 
-                # Strategy 3: Try with vec- prefix
                 if not llm_config_dict and not normalized_model.startswith('vec-'):
                     with_vec = f"vec-{normalized_model}"
                     if with_vec in model_to_config:
                         llm_config_dict = model_to_config[with_vec]
-                        logger.info(f"  ✓ Found config via vec- addition: {with_vec}")
+                        logger.info(f"Found config via vec- addition: {with_vec}")
                 
-                # Strategy 4: Fuzzy matching on base model name (llama, mistral, gpt)
+                # Fuzzy matching on base model name (llama, mistral, gpt)
                 if not llm_config_dict:
-                    # Extract base model type (llama, mistral, gpt, etc)
                     base_type = None
                     for model_type in ['llama', 'mistral', 'gpt']:
                         if model_type in normalized_model.lower():
@@ -284,26 +264,21 @@ class BasicDebateOrchestrator:
                         logger.info(f"  Trying fuzzy match for base type: {base_type}")
                         for config_key in model_to_config.keys():
                             if base_type in config_key.lower():
-                                # Check version similarity if it's llama or mistral
                                 if base_type in ['llama', 'mistral']:
-                                    # Extract version numbers
                                     import re
                                     requested_version = re.findall(r'\d+', normalized_model)
                                     config_version = re.findall(r'\d+', config_key)
                                     
-                                    # Match if major versions align
                                     if requested_version and config_version:
                                         if requested_version[0] == config_version[0]:
                                             llm_config_dict = model_to_config[config_key]
-                                            logger.info(f"  ✓ Found config via fuzzy match: '{normalized_model}' -> '{config_key}'")
+                                            logger.info(f"Found config via fuzzy match: '{normalized_model}' -> '{config_key}'")
                                             break
                                 else:
-                                    # For GPT models, just match the base type
                                     llm_config_dict = model_to_config[config_key]
-                                    logger.info(f"  ✓ Found config via base type match: '{config_key}'")
+                                    logger.info(f"Found config via base type match: '{config_key}'")
                                     break
                 
-                # Strategy 5: Fallback to llm_conf array from hydra_cfg if it exists
                 if not llm_config_dict and 'llm_conf' in hydra_cfg:
                     llm_conf_array = hydra_cfg['llm_conf']
                     if isinstance(llm_conf_array, list):
@@ -311,22 +286,19 @@ class BasicDebateOrchestrator:
                             conf_model = conf.get('modelName') or conf.get('model', '')
                             conf_normalized = normalize_model_name(conf_model)
                             
-                            # Try exact match
                             if conf_normalized == normalized_model:
                                 llm_config_dict = conf
-                                logger.info(f"  ✓ Found config from llm_conf array (exact)")
+                                logger.info(f"Found config from llm_conf array (exact)")
                                 break
                             
-                            # Try without vec- prefix
                             if conf_normalized.startswith('vec-') and conf_normalized[4:] == normalized_model:
                                 llm_config_dict = conf
-                                logger.info(f"  ✓ Found config from llm_conf array (vec- removal)")
+                                logger.info(f"Found config from llm_conf array (vec- removal)")
                                 break
                             
-                            # Try with vec- prefix
                             if normalized_model.startswith('vec-') and conf_normalized == normalized_model[4:]:
                                 llm_config_dict = conf
-                                logger.info(f"  ✓ Found config from llm_conf array (vec- addition)")
+                                logger.info(f"Found config from llm_conf array (vec- addition)")
                                 break
                 
                 if not llm_config_dict:
@@ -341,13 +313,12 @@ class BasicDebateOrchestrator:
                 
                 logger.info(f"  Using config with keys: {list(llm_config_dict.keys())}")
                 
-                # Create the agent with the correct config
                 llm_config_omega = OmegaConf.create(llm_config_dict)
                 
                 agent = BasicDebateAgent(
                     config=AgentConfig(
                         prompt_config=PromptConfig(
-                            system_prompt=prompts.get("system_prompt", "You are a helpful assistant."),
+                            system_prompt=prompts.get("system_prompt", "You are a helpful assistant that can answer questions and provide helpful information."),
                             partials=prompts.get("partials", {}),
                         ),
                         llm_config=LLMConfig.from_hydra_config(llm_config_omega),
@@ -373,7 +344,7 @@ class BasicDebateOrchestrator:
                 }
                 self.agent_name_map[agent.name] = agent
                 
-                logger.info(f"✓ Created LLM agent at position {agent_idx}: {agent.name} ({actual_model_name})")
+                logger.info(f"Created LLM agent at position {agent_idx}: {agent.name} ({actual_model_name})")
             
             agents.append(agent)
         
@@ -399,7 +370,6 @@ class BasicDebateOrchestrator:
                     model_counts[model] = 0
                 model_counts[model] += 1
         
-        # Map to llm1, llm2, llm3 format
         for idx, (model, count) in enumerate(model_counts.items(), 1):
             if idx <= 3:
                 llm_key = f"llm{idx}"
@@ -488,7 +458,6 @@ class BasicDebateOrchestrator:
         ]
         await asyncio.gather(*answer_tasks)
         
-        # Collect responses using the unique agent names
         for i, agent in enumerate(self.agents):
             if skip_agent_index is None or i != skip_agent_index:
                 response = agent.latest_response()
@@ -538,7 +507,6 @@ class BasicDebateOrchestrator:
             logger.info("Restoring previous round responses to agent history")
             
             # Extract responses from previous_response
-            # Structure: {"agent_name": {"response": "...", "extracted_answer": "..."}}
             for agent in self.agents:
                 agent_name = agent.name
                 
@@ -585,22 +553,17 @@ class BasicDebateOrchestrator:
                 for agent in self.agents
             ]
             await asyncio.gather(*discussion_tasks)
-        
-        # Generate new responses for this round
-        # Human agent will be handled through the wait mechanism
-        # AI agents generate their responses
+
         async def generate_answer_with_semaphore(agent):
             async with self.semaphore:
                 return await self._generate_agent_response(agent)
         
-        # Generate responses for all agents
         answer_tasks = [
             generate_answer_with_semaphore(agent) 
             for agent in self.agents
         ]
         await asyncio.gather(*answer_tasks)
         
-        # Collect responses using the unique agent names
         for agent in self.agents:
             response = agent.latest_response()
             current_round.add_response(agent.name, response)
@@ -758,7 +721,7 @@ class BasicDebateOrchestrator:
                     )
                     
                     stored_count += 1
-                    logger.info(f"✓ Stored response for agent {agent_idx} with model_name='{model_name}' - correct: {is_correct}")
+                    logger.info(f"Stored response for agent {agent_idx} with model_name='{model_name}' - correct: {is_correct}")
                 else:
                     logger.warning(f"No response found for agent {agent_idx} (name='{agent.name}')")
 
@@ -870,7 +833,7 @@ class BasicDebateOrchestrator:
         round_distribution = {}
         
         # Track model counts to reconstruct agent names correctly
-        model_index_map = {}  # Maps (round_num, model_name) -> local_index
+        model_index_map = {}
         
         for question_session in debate.question_sessions:
             for round_obj in question_session.rounds:
@@ -911,7 +874,6 @@ class BasicDebateOrchestrator:
                     round_model_counts[model_name] += 1
                     
                     # Reconstruct the agent key that matches what's stored
-                    # This should match the format from _store_round
                     if response.is_human:
                         agent_key = f"human_agent_{local_index}"
                     else:
@@ -971,16 +933,14 @@ class BasicDebateOrchestrator:
             return ""
         import re
         
-        # CRITICAL: Check for #### pattern first (used in math problem answers)
         final_answer_match = re.search(r'####\s*([+-]?\d+\.?\d*)', response)
         if final_answer_match:
             return final_answer_match.group(1).strip()
         
-        # Check for (X) patterns (multiple choice)
         final_answer_patterns = [
-            r'\(X\)\s*([A-E])\)',           # (X) C)
-            r'\(X\)\s*\(([A-E])\)',         # (X) (C)
-            r'\(X\)\s*([A-E])(?:\s|$)',     # (X) C at end or followed by space
+            r'\(X\)\s*([A-E])\)',
+            r'\(X\)\s*\(([A-E])\)', 
+            r'\(X\)\s*([A-E])(?:\s|$)',
         ]
         
         for pattern in final_answer_patterns:
@@ -988,12 +948,10 @@ class BasicDebateOrchestrator:
             if match:
                 return match.group(1).strip().upper()
         
-        # Check for boxed answers
         boxed_match = re.search(r'\\boxed\{([^}]+)\}', response)
         if boxed_match:
             return boxed_match.group(1).strip()
         
-        # Other patterns
         patterns = [
             r'(?:the )?(?:final )?answer is[:\s]+\(?([A-E])\)?',
             r'(?:the )?(?:final )?answer is[:\s]+([^\n\.]+)',
@@ -1007,7 +965,6 @@ class BasicDebateOrchestrator:
             match = re.search(pattern, response, re.IGNORECASE)
             if match:
                 answer = match.group(1).strip()
-                # Clean up trailing punctuation
                 return answer.rstrip('.,;: ')
         
         sentences = [s.strip() for s in response.split('.') if s.strip()]

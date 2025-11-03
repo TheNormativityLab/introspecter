@@ -155,47 +155,10 @@ class DebateListResponse(BaseModel):
     debates: List[Dict[str, Any]]
     total: int
 
-def load_hydra_config(
-    name: str,
-    task: str,
-    seed: int,
-    llm_conf: Optional[str] = None,
-    num_questions: int = 1,
-    num_rounds: int = 2,
-    agent_counts: List[int] = None
-) -> DictConfig:
-    """Load Hydra configuration."""
-    try:
-        config_dir = str(Path(__file__).parent.parent / "conf")
-        with initialize_config_dir(config_dir=config_dir, version_base="1.1"):
-            overrides = [
-                f"+task={task}",
-                f"+experiment.num_questions={num_questions}",
-                f"+experiment.num_rounds={num_rounds}",
-                f"+experiment.name={name}",
-                f"+cost_check={False}",
-                f"++seed={seed}",
-            ]
-
-            if llm_conf:
-                overrides.append(f"+llm_conf@llm1={llm_conf}")
-
-            if agent_counts:
-                overrides.append(f"+agent_counts=[{','.join(map(str, agent_counts))}]")
-
-            cfg = compose(config_name="config", overrides=overrides)
-            OmegaConf.resolve(cfg)
-            return cfg
-
-    except Exception as e:
-        logger.error(f"Failed to load Hydra config: {e}", exc_info=True)
-        raise HTTPException(500, detail=f"Failed to load configuration: {str(e)}")
-
 async def get_db_session():
     """Get database session."""
     async with db_manager.get_session() as session:
         yield session
-
 
 async def get_debate_repository(session=Depends(get_db_session)):
     """Get debate repository."""
@@ -212,7 +175,6 @@ def normalize_model_name(model_name: str) -> str:
     normalized = model_name.lower().strip()    
     normalized = normalized.replace("-", "_")    
     return normalized
-
 
 def get_model_config_name(model_name: str) -> str:
     """

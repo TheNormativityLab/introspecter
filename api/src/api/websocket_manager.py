@@ -180,8 +180,8 @@ class WebSocketManager:
                 auto_delete=False, 
                 exclusive=False,
                 arguments={
-                    'x-message-ttl': 300000,  # 5 minutes (increased from 60s)
-                    'x-expires': 600000       # 10 minutes (increased from 120s)
+                    'x-message-ttl': 300000,
+                    'x-expires': 600000
                 }
             )
             
@@ -193,7 +193,6 @@ class WebSocketManager:
             
             logger.info(f"Queue {queue_name} declared and bound for debate {debate_id}")
             
-            # CRITICAL: Signal that consumer is ready BEFORE starting to iterate
             if consumer_ready_event:
                 consumer_ready_event.set()
                 logger.info(f"Consumer ready signal sent for debate {debate_id}")
