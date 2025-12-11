@@ -25,7 +25,7 @@ This debate format guides agents through interpreting a context story, forming p
 Here's a complete argumentative debate from setup through resolution:
 
 <video controls autoplay loop width="100%">
-  <source src="/assets/argumentative-debate.mp4" type="video/mp4">
+  <source src="../../assets/argumentative-debate.mp4" type="video/mp4">
   Your browser does not support the video tag.
 </video>
 

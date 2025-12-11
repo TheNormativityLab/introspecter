@@ -86,7 +86,7 @@ You need to set `HOST_PROJECT_PATH` in your `.env` file so the container knows w
 The backend requires specific metadata files to initialize correctly.
 
 !!! warning "Manual Step Required"
-    1. [Download the wandb_metadata folder from Google Drive](https://drive.google.com){ .md-button }
+    1. [Download the wandb_metadata folder from Google Drive](https://drive.google.com/drive/folders/18xbqaHubmpQxrubngM7jGQF4QK_W6uXF){ .md-button }
     2. Extract the zip file.
     3. Move the `wandb_metadata` folder into `backend/`.
 

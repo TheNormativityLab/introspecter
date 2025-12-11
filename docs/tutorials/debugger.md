@@ -24,7 +24,7 @@ The Debugger interface shows your completed debate runs in the left sidebar. Eac
 Select your completed debate, choose a question, starting round, and the model you want to override:
 
 <video controls autoplay loop muted width="100%">
-  <source src="/assets/debugger-setup.mp4" type="video/mp4">
+  <source src="../../assets/debugger-setup.mp4" type="video/mp4">
   Your browser does not support the video tag.
 </video>
 
@@ -33,7 +33,7 @@ Select your completed debate, choose a question, starting round, and the model y
 Once you start the debug session, you can inject your own reasoning at the selected point:
 
 <video controls autoplay loop muted width="100%">
-  <source src="/assets/debugger-counterfactual.mp4" type="video/mp4">
+  <source src="../../assets/debugger-counterfactual.mp4" type="video/mp4">
   Your browser does not support the video tag.
 </video>
 

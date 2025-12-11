@@ -11,10 +11,10 @@ A framework for simulating and analyzing multi-agent LLM debates on reasoning be
 ## Quick Start
 
 **Installation**  
-Follow the [installation guide](https://docs.transluce.org/en/latest/self_hosting/self_host_docent/).
+Follow the [installation guide](https://thenormativitylab.github.io/introspecter/installation/local_setup/).
 
 **Database Management**  
-Use [pgAdmin](https://marketplace.visualstudio.com/items?itemName=cweijan.vscode-database-client2) to browse the schemas and data in both Introspecter databases.
+Use [pgAdmin](https://thenormativitylab.github.io/introspecter/installation/database/) to browse the schemas and data in both Introspecter databases.
 
 **Tutorials**  
-Quick guides for debate types (basic, argumentative, etc.) in the [debate guide](https://marketplace.visualstudio.com/items?itemName=cweijan.vscode-database-client2).
+Quick guides for debate types (basic, argumentative, etc.) in the [debate guide](https://thenormativitylab.github.io/introspecter/tutorials/basic_debate/).
