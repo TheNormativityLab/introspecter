@@ -1,35 +1,29 @@
 "use client";
-import React from "react";
-import { Button } from "@/components/button/Button";
-import { useEffect, useState } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import React, { useEffect, useState, useMemo } from "react";
+import { useParams, useSearchParams, useRouter } from "next/navigation";
 import {
+  ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  TrendingDown,
+  CheckCircle2,
+  XCircle,
+  AlertOctagon,
+  Database,
+  BarChart3,
+  MessageSquare,
   ChevronDown,
   ChevronUp,
-} from "react-feather";
+  Hash,
+  Check,
+  User
+} from "lucide-react";
 import {
   MultiRunDebateData,
   DebateRun,
   EvaluationResult,
   IncorrectSwitchQuestion,
 } from "../../../types/debate";
-import {
-  ArrowLeft,
-  CheckCircle,
-  MessageSquare,
-  Database,
-  Scale,
-  TrendingDown,
-  Trophy,
-  PlayCircle,
-  Brain,
-  XCircle,
-  BarChart3,
-  AlertCircle,
-} from "lucide-react";
-
 import {
   solveMathProblems,
   parseMmluAnswer,
@@ -39,25 +33,87 @@ import {
   parseCustomQuestionsAnswer,
   type TaskName,
 } from "../../../utils/evaluation";
-import "./ViewDebatePage.scss";
+import "katex/dist/katex.min.css";
 
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
+const LatexRenderer = ({ text }: { text: string }) => {
+  const [parts, setParts] = useState<React.ReactNode[]>([]);
 
-const inferDatasetFromTask = (
-  task: string,
-  fallbackDatasetName?: string
-): string => {
+  useEffect(() => {
+    if (!text) {
+      setParts([]);
+      return;
+    }
+
+    if (!(window as any).katex) {
+      setParts([<span key="raw" className="whitespace-pre-wrap font-sans">{text}</span>]);
+      return;
+    }
+    const regex = /(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|(?<!\\)\$[^$\n]+(?<!\\)\$)/g;
+    
+    const splitText = text.split(regex);
+    
+    const renderedParts = splitText.map((part, index) => {
+      if (regex.test(part)) {
+        try {
+          const isDisplay = part.startsWith("$$") || part.startsWith("\\[");
+          const cleanTex = part.replace(/^(\$\$|\\\[|\\\(|\$)|(\$\$|\\\]|\\\)|(?<!\\)\$)$/g, "");
+          
+          const html = (window as any).katex.renderToString(cleanTex, {
+            displayMode: isDisplay,
+            throwOnError: false,
+            trust: true,
+          });
+          
+          return (
+            <span 
+              key={index} 
+              className={isDisplay ? "block my-4 text-center" : "inline-block align-middle mx-0.5"}
+              dangerouslySetInnerHTML={{ __html: html }} 
+            />
+          );
+        } catch (e) {
+          return <span key={index} className="text-red-500 font-mono text-xs">{part}</span>;
+        }
+      } 
+      else {
+        if (!part) return null;
+        
+        const boldParts = part.split(/(\*\*.*?\*\*)/g).map((subPart, subIndex) => {
+            if (subPart.startsWith("**") && subPart.endsWith("**")) {
+                return <strong key={subIndex} className="font-bold text-slate-900">{subPart.slice(2, -2)}</strong>;
+            }
+            return subPart;
+        });
+
+        return (
+          <span key={index} className="whitespace-pre-wrap leading-7 text-slate-700 font-sans">
+            {boldParts}
+          </span>
+        );
+      }
+    });
+
+    setParts(renderedParts);
+  }, [text]);
+
+  return <div className="latex-content text-sm">{parts}</div>;
+};
+
+const getDatasetDisplayName = (dataset: string) => {
+    const map: Record<string, string> = {
+        gsm8k: "GSM8K",
+        mmlu: "MMLU",
+        commonsense_qa: "CommonsenseQA",
+        custom_questions: "Custom",
+        math: "MATH"
+    };
+    return map[dataset.toLowerCase()] || dataset.toUpperCase();
+};
+
+const inferDatasetFromTask = (task: string, fallbackDatasetName?: string): string => {
   if (fallbackDatasetName) {
     const normalized = fallbackDatasetName.toLowerCase().trim();
-    if (
-      ["mmlu", "gsm8k", "commonsense_qa", "math", "custom_questions"].includes(
-        normalized
-      )
-    ) {
-      return normalized;
-    }
+    if (["mmlu", "gsm8k", "commonsense_qa", "math", "custom_questions"].includes(normalized)) return normalized;
   }
   if (!task) return "unknown";
   const lowerTask = task.toLowerCase();
@@ -74,31 +130,21 @@ const safeGetQuestions = (resultData: any): any[] => {
   if (Array.isArray(resultData)) return resultData;
   if (typeof resultData === "object") {
     if (Array.isArray(resultData.questions)) return resultData.questions;
-    if (resultData.data && Array.isArray(resultData.data.questions))
-      return resultData.data.questions;
+    if (resultData.data && Array.isArray(resultData.data.questions)) return resultData.data.questions;
     if (resultData.question_text || resultData.question) return [resultData];
   }
   return [];
 };
 
-const evaluateResponse = (
-  response: string,
-  correctAnswer: string | number,
-  taskName: TaskName
-): EvaluationResult => {
+const evaluateResponse = (response: string, correctAnswer: string | number, taskName: TaskName): EvaluationResult => {
   let extractedAnswer: string | number | null = null;
-
-  if (taskName === "mmlu") {
-    extractedAnswer = parseMmluAnswer(response) ?? solveMathProblems(response);
-  } else if (taskName === "math") {
-    extractedAnswer = parseMathAnswer(response);
-  } else if (taskName === "commonsense_qa") {
-    extractedAnswer = parseCommonsenseQaAnswer(response);
-  } else if (taskName === "custom_questions") {
-    extractedAnswer = parseCustomQuestionsAnswer(response);
-  } else if (taskName === "gsm8k") {
-    extractedAnswer = parseGsm8kAnswer(response);
-  }
+  if (!response) return { isCorrect: false, extractedAnswer: null };
+  
+  if (taskName === "mmlu") extractedAnswer = parseMmluAnswer(response) ?? solveMathProblems(response);
+  else if (taskName === "math") extractedAnswer = parseMathAnswer(response);
+  else if (taskName === "commonsense_qa") extractedAnswer = parseCommonsenseQaAnswer(response);
+  else if (taskName === "custom_questions") extractedAnswer = parseCustomQuestionsAnswer(response);
+  else if (taskName === "gsm8k") extractedAnswer = parseGsm8kAnswer(response);
 
   let isCorrect = false;
   if (extractedAnswer !== null) {
@@ -106,342 +152,166 @@ const evaluateResponse = (
       const gtValue = solveMathProblems(correctAnswer.toString());
       const predValue = solveMathProblems(extractedAnswer.toString());
       isCorrect = predValue === gtValue;
-    } else if (
-      taskName === "commonsense_qa" ||
-      taskName === "mmlu" ||
-      taskName == "custom_questions"
-    ) {
-      isCorrect =
-        extractedAnswer.toString().toUpperCase() ===
-        correctAnswer.toString().toUpperCase();
     } else if (taskName === "math") {
-      const gtValue =
-        typeof correctAnswer === "string"
-          ? parseFloat(correctAnswer)
-          : correctAnswer;
-      const predValue =
-        typeof extractedAnswer === "string"
-          ? parseFloat(extractedAnswer)
-          : extractedAnswer;
+      const gtValue = typeof correctAnswer === "string" ? parseFloat(correctAnswer) : correctAnswer;
+      const predValue = typeof extractedAnswer === "string" ? parseFloat(extractedAnswer) : extractedAnswer;
       isCorrect = Math.abs(predValue - gtValue) < 1e-6;
     } else {
-      isCorrect =
-        extractedAnswer.toString().toUpperCase() ===
-        correctAnswer.toString().toUpperCase();
+      isCorrect = extractedAnswer.toString().toUpperCase() === correctAnswer.toString().toUpperCase();
     }
   }
-
   return { isCorrect, extractedAnswer };
 };
 
-// ============================================
-// SUBCOMPONENTS
-// ============================================
-
-const LoadingState = () => (
-  <div className="loading-container">
-    <div className="loading-content">
-      <div className="spinner"></div>
-      <p>Loading debate...</p>
-    </div>
-  </div>
-);
-
-const ErrorState = ({ error }: { error: string }) => (
-  <div className="error-container">
-    <div className="error-content">
-      <p>{error}</p>
-      <button onClick={() => window.location.reload()}>Retry</button>
-    </div>
-  </div>
-);
-
-const getDatasetName = (
-  debateData: MultiRunDebateData | null,
-  runIndex: number | undefined
-) => {
-  if (!debateData || runIndex === undefined) return "Dataset";
-  const run = debateData.runs?.[runIndex];
-  return run?.dataset_name || `Dataset ${runIndex + 1}`;
-};
-
-const getDatasetDisplayName = (dataset: string): string => {
-  const names: { [key: string]: string } = {
-    mmlu: "MMLU",
-    gsm8k: "GSM8K",
-    commonsense_qa: "CommonsenseQA",
-    math: "MATH",
-    custom_questions: "Custom Questions",
-  };
-  return names[dataset.toLowerCase()] || dataset.toUpperCase();
-};
-
-const EvaluationBadge = ({
-  evaluation,
-}: {
-  evaluation: EvaluationResult | undefined;
-}) => {
-  if (!evaluation) return null;
-
-  const isCorrect = evaluation.isCorrect;
-  return (
-    <div className="evaluation-badge">
-      <span className={`status-badge ${isCorrect ? "correct" : "incorrect"}`}>
-        {isCorrect ? (
-          <CheckCircle className="w-3 h-3" />
-        ) : (
-          <XCircle className="w-3 h-3" />
-        )}
-        {isCorrect ? "Correct" : "Incorrect"}
-      </span>
-      {evaluation.extractedAnswer !== null && (
-        <span className={`answer-badge ${isCorrect ? "correct" : "incorrect"}`}>
-          Answer: {evaluation.extractedAnswer}
-        </span>
-      )}
-    </div>
-  );
-};
-
-const QuestionNavigator = ({
-  currentIndex,
-  total,
-  onPrevious,
-  onNext,
-  showRunFilter,
-  selectedRun,
-  totalRuns,
-  onRunChange,
-  debateData,
-}: {
-  currentIndex: number;
-  total: number;
-  onPrevious: () => void;
-  onNext: () => void;
-  showRunFilter?: boolean;
-  selectedRun?: number;
-  totalRuns?: number;
-  onRunChange?: (run: number) => void;
-  debateData?: MultiRunDebateData | null;
+const SidebarItem = ({ 
+  index, 
+  isActive, 
+  hasSwitch, 
+  onClick 
+}: { 
+  index: number; 
+  isActive: boolean; 
+  hasSwitch: boolean; 
+  onClick: () => void;
 }) => (
-  <div className="navigator-card">
-    <div className="navigator-header">
-      <h3>Navigate Questions</h3>
-      <span className="question-counter">
-        {total === 0
-          ? "No questions"
-          : `${currentIndex + 1} of ${total} questions`}
+  <button
+    onClick={onClick}
+    className={`w-full flex items-center justify-between px-4 py-3 border-b border-slate-100 transition-all ${
+      isActive 
+        ? "bg-blue-50 border-l-4 border-l-blue-600" 
+        : "bg-white hover:bg-slate-50 border-l-4 border-l-transparent"
+    }`}
+  >
+    <div className="flex items-center gap-3">
+      <span className={`text-sm font-mono ${isActive ? "font-bold text-blue-700" : "text-slate-500"}`}>
+        Question {index + 1}
       </span>
     </div>
-
-    <div className="navigator-controls">
-      {showRunFilter && totalRuns && totalRuns > 1 && (
-        <div className="dataset-selector">
-          <Database />
-          <label>Select Dataset:</label>
-          <select
-            value={selectedRun}
-            onChange={(e) => onRunChange?.(parseInt(e.target.value))}
-          >
-            {Array.from({ length: totalRuns! }, (_, i) => (
-              <option key={i} value={i}>
-                {getDatasetDisplayName(getDatasetName(debateData ?? null, i))}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      <div className="navigation-buttons">
-        <Button
-          buttonStyle="secondary"
-          variant="outline"
-          icon={ChevronLeft}
-          iconPosition="start"
-          label="Previous"
-          size="md"
-          onClick={onPrevious}
-          disabled={currentIndex <= 0 || total === 0}
-        />
-        <Button
-          buttonStyle="secondary"
-          variant="outline"
-          icon={ChevronRight}
-          iconPosition="start"
-          label="Next"
-          size="md"
-          onClick={onNext}
-          disabled={currentIndex >= total - 1 || total === 0}
-        />
-      </div>
-    </div>
-  </div>
+    
+    {hasSwitch && (
+       <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-100 text-red-700" title="Regression Detected">
+          <TrendingDown size={12} />
+       </div>
+    )}
+  </button>
 );
 
-const AgentResponse = ({
+const AgentCard = ({
   agentName,
   response,
   evaluation,
-  roundIndex,
-  isCollapsed,
-  hasSwitched,
-  onToggleCollapse,
-  renderLatex,
-  questionIndex,
+  isRegressionPoint, 
+  defaultCollapsed = true, 
 }: {
-  agentName: string;
-  response: string;
-  evaluation: EvaluationResult | undefined;
-  roundIndex: number;
-  isCollapsed: boolean;
-  hasSwitched: boolean;
-  onToggleCollapse: () => void;
-  renderLatex: (text: string) => React.ReactNode;
-  questionIndex: number;
+    agentName: string,
+    response: string,
+    evaluation?: EvaluationResult,
+    isRegressionPoint?: boolean,
+    defaultCollapsed?: boolean
 }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  // Reset expansion when question changes
-  useEffect(() => {
-    setIsExpanded(false);
-  }, [questionIndex]);
-
-  // Calculate truncation once and memoize it
-  const { truncatedResponse, canBeTruncated } = React.useMemo(() => {
-    const lines = response.split("\n").filter((line) => line.trim().length > 0);
-    if (lines.length <= 2) {
-      return { truncatedResponse: response, canBeTruncated: false };
-    }
-    return {
-      truncatedResponse: lines.slice(0, 2).join("\n") + " ...",
-      canBeTruncated: true,
-    };
-  }, [response]);
-
-  const displayResponse = isExpanded ? response : truncatedResponse;
-
-  let cardClass = "agent-response-card";
-  if (evaluation) {
-    if (evaluation.isCorrect) {
-      cardClass += " correct";
-    } else {
-      cardClass += " incorrect";
-    }
-  }
-  if (hasSwitched) {
-    cardClass += " switched";
-  }
+  const [isExpanded, setIsExpanded] = useState(isRegressionPoint ? true : !defaultCollapsed);
+  const isCorrect = evaluation?.isCorrect;
 
   return (
-    <div className={cardClass}>
-      <div className="response-header">
-        <div className="agent-info">
-          <Brain />
-          <h4>{agentName}</h4>
-          {hasSwitched && (
-            <span className="switch-badge">
-              <TrendingDown />
-              Switch
-            </span>
-          )}
+    <div className={`mb-4 rounded-xl border overflow-hidden transition-all shadow-sm ${
+      isRegressionPoint ? "border-red-200 ring-1 ring-red-200" : "border-slate-200"
+    }`}>
+      {/* Header */}
+      <div className={`px-4 py-3 flex items-center justify-between ${
+          isRegressionPoint ? "bg-red-50/50" : "bg-slate-50"
+        }`}
+      >
+        <div className="flex items-center gap-3">
+          <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold border ${
+             isRegressionPoint ? "bg-white text-red-600 border-red-200" : "bg-white text-slate-600 border-slate-200"
+          }`}>
+            {agentName.charAt(0).toUpperCase()}
+          </div>
+          <div>
+            <div className="text-sm font-bold text-slate-800">{agentName}</div>
+            {isRegressionPoint && <div className="text-[10px] font-bold text-red-600 uppercase">Regression Point</div>}
+          </div>
         </div>
-        <button onClick={onToggleCollapse} className="collapse-button">
-          <span>{isCollapsed ? "Expand" : "Collapse"}</span>
-          {isCollapsed ? <ChevronDown /> : <ChevronUp />}
-        </button>
+
+        <div className="flex items-center gap-3">
+            {evaluation && (
+                <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold uppercase border ${
+                    isCorrect 
+                        ? "bg-emerald-100 text-emerald-700 border-emerald-200" 
+                        : "bg-red-100 text-red-700 border-red-200"
+                }`}>
+                    {isCorrect ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
+                    {isCorrect ? "Correct" : "Incorrect"}
+                </div>
+            )}
+        </div>
       </div>
 
-      {!isCollapsed && (
-        <div className="response-content">
-          <EvaluationBadge evaluation={evaluation} />
-          {displayResponse ? (
-            <>
-              <div className="response-text">
-                {renderLatex(displayResponse)}
-              </div>
-              {canBeTruncated && (
-                <div className="expand-section">
-                  <button
-                    onClick={() => setIsExpanded(!isExpanded)}
-                    className={`expand-button ${isExpanded ? "collapse" : ""}`}
-                  >
-                    {isExpanded ? (
-                      <>
-                        {/* <ChevronUp />
-                        Show Less */}
-                      </>
-                    ) : (
-                      <>
-                        <ChevronDown />
-                        Show Full Response
-                      </>
-                    )}
-                  </button>
-                </div>
-              )}
-            </>
-          ) : (
-            <div
-              className="response-text"
-              style={{
-                textAlign: "center",
-                fontStyle: "italic",
-                color: "#94a3b8",
-              }}
-            >
-              No response
-            </div>
-          )}
+      {/* Body */}
+      <div className="bg-white relative">
+        <div className={`px-5 py-4 transition-all duration-300 ease-in-out ${
+            !isExpanded ? "max-h-32 overflow-hidden" : ""
+        }`}>
+            <LatexRenderer text={response || "No response provided."} />
+            
+            {evaluation?.extractedAnswer && (
+                 <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-2">
+                     <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Extracted:</span>
+                     <code className="text-xs bg-slate-100 px-2 py-1 rounded text-slate-700 font-mono">
+                        {evaluation.extractedAnswer}
+                     </code>
+                 </div>
+            )}
         </div>
-      )}
+
+        {!isExpanded && (
+            <div className="absolute bottom-0 left-0 right-0 h-20 bg-linear-to-t from-white via-white/90 to-transparent flex items-end justify-center pb-2">
+                <button 
+                    onClick={() => setIsExpanded(true)}
+                    className="flex items-center gap-2 px-4 py-1.5 bg-white border border-slate-200 rounded-full shadow-sm text-xs font-bold text-slate-600 hover:text-blue-600 hover:border-blue-200 transition-all z-10"
+                >
+                    <ChevronDown size={14} /> Read full reasoning
+                </button>
+            </div>
+        )}
+        
+        {isExpanded && (
+             <div className="px-5 pb-3 pt-0 flex justify-center">
+                 <button 
+                    onClick={() => setIsExpanded(false)}
+                    className="flex items-center gap-1 text-[10px] font-bold text-slate-400 hover:text-slate-600 uppercase tracking-wider mt-2"
+                >
+                    <ChevronUp size={12} /> Show Less
+                </button>
+             </div>
+        )}
+      </div>
     </div>
   );
 };
-
-// ============================================
-// MAIN COMPONENT
-// ============================================
 
 export default function DebateDetailsPage() {
   const params = useParams();
   const searchParams = useSearchParams();
+  const router = useRouter();
   const debateId = params.id as string;
-  const seed = searchParams.get("seed") || "default";
+  const initialSeed = searchParams.get("seed") || "default";
 
-  // State
-  const [activeTab, setActiveTab] = useState("questions");
-  const [selectedQuestion, setSelectedQuestion] = useState(0);
-  const [selectedRun, setSelectedRun] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [debateData, setDebateData] = useState<MultiRunDebateData | null>(null);
-  const [collapsedAgents, setCollapsedAgents] = useState<{
-    [key: string]: boolean;
-  }>({});
-  const [filteredQuestions, setFilteredQuestions] = useState<number[]>([]);
-  const [evaluationResults, setEvaluationResults] = useState<{
-    [key: string]: EvaluationResult;
-  }>({});
-  const [incorrectSwitches, setIncorrectSwitches] = useState<
-    IncorrectSwitchQuestion[]
-  >([]);
-  const [katexLoaded, setKatexLoaded] = useState(false);
+  const [selectedRunIndex, setSelectedRunIndex] = useState(0);
+  const [selectedQuestionIndex, setSelectedQuestionIndex] = useState(0);
+  const [showRegressionsOnly, setShowRegressionsOnly] = useState(false);
+  const [viewMode, setViewMode] = useState<'debate' | 'performance'>('debate');
+  
+  const [incorrectSwitches, setIncorrectSwitches] = useState<IncorrectSwitchQuestion[]>([]);
+  const [evaluationResults, setEvaluationResults] = useState<{ [key: string]: EvaluationResult }>({});
 
-  // Load KaTeX
   useEffect(() => {
     if (!(window as any).katex) {
       const script = document.createElement("script");
-      script.src =
-        "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js";
-      script.onload = () => setKatexLoaded(true);
-      document.body.appendChild(script);
-
-      const css = document.createElement("link");
-      css.rel = "stylesheet";
-      css.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css";
-      document.head.appendChild(css);
-    } else {
-      setKatexLoaded(true);
+      script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js";
+      document.head.appendChild(script);
     }
   }, []);
 
@@ -449,628 +319,341 @@ export default function DebateDetailsPage() {
     const fetchDebate = async () => {
       try {
         if (!debateId) return;
-        const response = await fetch(
-          `/api/single-debate?experimentName=${encodeURIComponent(
-            debateId
-          )}&seed=${encodeURIComponent(seed)}`
-        );
+        const response = await fetch(`/api/single-debate?experimentName=${encodeURIComponent(debateId)}&seed=${encodeURIComponent(initialSeed)}`);
         const data = await response.json();
         setDebateData(data);
+        if (data.runs) {
+             const idx = data.runs.findIndex((r: any) => r.seed === initialSeed);
+             if (idx !== -1) setSelectedRunIndex(idx);
+        }
         setLoading(false);
       } catch (err) {
-        setError("Failed to load debate data");
-        console.error("Fetch error:", err);
+        console.error(err);
         setLoading(false);
       }
     };
     fetchDebate();
-  }, [debateId, seed]);
+  }, [debateId, initialSeed]);
 
-  const getCurrentRun = (): DebateRun | null => {
+  const currentRun = useMemo(() => {
     if (!debateData) return null;
-    if (Array.isArray(debateData.runs) && debateData.runs.length > 0) {
-      return debateData.runs[selectedRun] || debateData.runs[0];
-    }
-    if (!Array.isArray(debateData.runs) && (debateData as any).result_data) {
-      return debateData as unknown as DebateRun;
-    }
+    if (Array.isArray(debateData.runs) && debateData.runs.length > 0) return debateData.runs[selectedRunIndex];
+    if ((debateData as any).result_data) return debateData as any as DebateRun;
     return null;
-  };
-  const currentRun = getCurrentRun();
+  }, [debateData, selectedRunIndex]);
 
-  // Find incorrect switches
-  const findIncorrectSwitches = (): IncorrectSwitchQuestion[] => {
-    if (!currentRun?.result_data) return [];
-
-    const switches: IncorrectSwitchQuestion[] = [];
-    const taskName = inferDatasetFromTask(
-      currentRun?.wandb_metadata?.parsed_args?.task,
-      currentRun?.dataset_name
-    ) as TaskName;
-
+  useEffect(() => {
+    if (!currentRun?.result_data) return;
+    const taskName = inferDatasetFromTask(currentRun.wandb_metadata?.parsed_args?.task, currentRun.dataset_name) as TaskName;
     const questions = safeGetQuestions(currentRun.result_data);
-    questions.forEach((questionData, questionIndex) => {
-      const rounds = questionData.debate_session?.rounds || [];
-      if (rounds.length < 2) return;
-
-      const agentNames = Object.keys(rounds[0].responses || {});
-      agentNames.forEach((agentName) => {
-        const agentEvaluations: boolean[] = rounds.map((round: any) => {
-          try {
-            const response = round.responses[agentName] || "";
-            const evaluation = evaluateResponse(
-              response,
-              questionData.correct_answer,
-              taskName
-            );
-            return evaluation.isCorrect;
-          } catch {
-            return false;
-          }
+    
+    const switches: IncorrectSwitchQuestion[] = [];
+    questions.forEach((q, qIdx) => {
+        const rounds = q.debate_session?.rounds || [];
+        if(rounds.length < 2) return;
+        Object.keys(rounds[0].responses || {}).forEach(agent => {
+            const evals = rounds.map((r: any) => evaluateResponse(r.responses[agent]||"", q.correct_answer, taskName).isCorrect);
+            for(let i=1; i<evals.length; i++) {
+                if(evals[i-1] && !evals[i]) {
+                    switches.push({questionIndex: qIdx, agentName: agent, switchedFromRound: i-1, switchedToRound: i});
+                }
+            }
         });
-
-        for (let i = 1; i < agentEvaluations.length; i++) {
-          if (agentEvaluations[i - 1] && !agentEvaluations[i]) {
-            switches.push({
-              questionIndex,
-              agentName,
-              switchedFromRound: i - 1,
-              switchedToRound: i,
-            });
-          }
-        }
-      });
     });
+    setIncorrectSwitches(switches);
+    setSelectedQuestionIndex(0);
+  }, [currentRun]);
 
-    return switches;
-  };
+  const filteredQuestionIndices = useMemo(() => {
+    if (!currentRun?.result_data) return [];
+    const allIndices = safeGetQuestions(currentRun.result_data).map((_, i) => i);
+    if (!showRegressionsOnly) return allIndices;
+    const switchIndices = new Set(incorrectSwitches.map(s => s.questionIndex));
+    return allIndices.filter(i => switchIndices.has(i));
+  }, [currentRun, showRegressionsOnly, incorrectSwitches]);
 
-  // Update incorrect switches
   useEffect(() => {
-    if (currentRun) {
-      const switches = findIncorrectSwitches();
-      setIncorrectSwitches(switches);
-    }
-  }, [currentRun, selectedRun]);
+     if (filteredQuestionIndices.length > 0 && !filteredQuestionIndices.includes(selectedQuestionIndex)) {
+         setSelectedQuestionIndex(filteredQuestionIndices[0]);
+     }
+  }, [filteredQuestionIndices, selectedQuestionIndex]);
 
-  // Update evaluation results
   useEffect(() => {
-    if (!currentRun?.result_data?.[selectedQuestion]) return;
+    if (!currentRun?.result_data) return;
+    const questions = safeGetQuestions(currentRun.result_data);
+    const qData = questions[selectedQuestionIndex];
+    if (!qData) return;
 
-    const newEvaluationResults: { [key: string]: EvaluationResult } = {};
-    const questionData = currentRun.result_data[selectedQuestion];
-    const taskName = inferDatasetFromTask(
-      currentRun.wandb_metadata?.parsed_args?.task,
-      currentRun.dataset_name
-    ) as TaskName;
-
-    questionData.debate_session?.rounds?.forEach(
-      (round: any, roundIndex: number) => {
-        Object.entries(round.responses).forEach(([agentName, response]) => {
-          const key = `${agentName}_${roundIndex}`;
-          newEvaluationResults[key] = evaluateResponse(
-            response as string,
-            questionData.correct_answer,
-            taskName
-          );
+    const taskName = inferDatasetFromTask(currentRun.wandb_metadata?.parsed_args?.task, currentRun.dataset_name) as TaskName;
+    const evals: any = {};
+    
+    qData.debate_session?.rounds?.forEach((r: any, rIdx: number) => {
+        Object.entries(r.responses).forEach(([agent, resp]) => {
+            evals[`${agent}_${rIdx}`] = evaluateResponse(resp as string, qData.correct_answer, taskName);
         });
-      }
-    );
-
-    setEvaluationResults(newEvaluationResults);
-  }, [selectedQuestion, selectedRun, currentRun]);
-
-  // Filter questions
-  useEffect(() => {
-    if (!currentRun?.result_data) {
-      setFilteredQuestions([]);
-      return;
-    }
-
-    const questionsSafe = safeGetQuestions(currentRun.result_data);
-    let questions = questionsSafe.map((_, index) => index);
-
-    // Apply analysis filter (incorrect switches only)
-    if (activeTab === "filter-incorrect") {
-      const switchQuestions = [
-        ...new Set(incorrectSwitches.map((s) => s.questionIndex)),
-      ];
-      questions = questions.filter((index) => switchQuestions.includes(index));
-    }
-
-    setFilteredQuestions(questions);
-
-    // Reset to first question if current question is not in filtered list
-    if (questions.length > 0 && !questions.includes(selectedQuestion)) {
-      setSelectedQuestion(questions[0]);
-    }
-  }, [currentRun, activeTab, selectedQuestion, selectedRun, incorrectSwitches]);
-
-  // Reset on run change
-  useEffect(() => {
-    setSelectedQuestion(0);
-  }, [selectedRun]);
-
-const renderLatex = (text: string): React.ReactNode => {
-  // Early return if KaTeX isn't loaded
-  if (!katexLoaded || !(window as any).katex) {
-    return <span>{text}</span>;
-  }
-
-  // Helper function to process bold text within a string
-  const processBold = (text: string, keyPrefix: string): React.ReactNode[] => {
-    const boldRegex = /\*\*(.*?)\*\*/g;
-    const parts: React.ReactNode[] = [];
-    let lastIndex = 0;
-    let match;
-    let keyIndex = 0;
-
-    while ((match = boldRegex.exec(text)) !== null) {
-      // Add text before bold
-      if (match.index > lastIndex) {
-        parts.push(
-          <span key={`${keyPrefix}-text-${keyIndex++}`}>
-            {text.substring(lastIndex, match.index)}
-          </span>
-        );
-      }
-      // Add bold text
-      parts.push(
-        <strong key={`${keyPrefix}-bold-${keyIndex++}`}>{match[1]}</strong>
-      );
-      lastIndex = match.index + match[0].length;
-    }
-
-    // Add remaining text
-    if (lastIndex < text.length) {
-      parts.push(
-        <span key={`${keyPrefix}-text-${keyIndex++}`}>
-          {text.substring(lastIndex)}</span>
-      );
-    }
-
-    return parts.length > 0 ? parts : [<span key={`${keyPrefix}-text-0`}>{text}</span>];
-  };
-
-  let processedText = text;
-
-  // Protect dollar amounts: $200, $50.99, etc.
-  // Replace with a placeholder to avoid LaTeX interpretation
-  const dollarAmounts: string[] = [];
-  processedText = processedText.replace(/\$(\d+(?:\.\d+)?)/g, (match, amount) => {
-    dollarAmounts.push(match);
-    return `__DOLLAR_${dollarAmounts.length - 1}__`;
-  });
-
-  // LaTeX detection regex - only match valid LaTeX patterns
-  // \[...\], \(...\), $$...$$, $...$ (with content), <<...>>, \boxed{...}
-  const latexRegex = /\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$\$[\s\S]*?\$\$|\$[^$\s][^$]*?[^$\s]\$|<<[^>]+>>|\\boxed\{[^}]+\}/g;
-
-  const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let partKey = 0;
-
-  // Function to render KaTeX
-  const renderKatex = (
-    latex: string,
-    isDisplay: boolean,
-    isCalculation: boolean
-  ): React.ReactNode => {
-    try {
-      let formattedLatex = latex.trim();
-
-      // Format calculation expressions in <<...>>
-      if (isCalculation) {
-        formattedLatex = formattedLatex
-          .replace(/\*/g, ' \\times ')
-          .replace(/\+/g, ' + ')
-          .replace(/(?<=\d)-(?=\d)/g, ' - ')
-          .replace(/=/g, ' = ');
-      }
-
-      const html = (window as any).katex.renderToString(formattedLatex, {
-        displayMode: isDisplay,
-        throwOnError: false,
-        output: "html",
-        strict: false,
-        trust: false,
-      });
-
-      return (
-        <span
-          key={`latex-${partKey++}`}
-          dangerouslySetInnerHTML={{ __html: html }}
-          style={{
-            display: isDisplay ? "block" : "inline",
-            margin: isDisplay ? "0.5em 0" : "0 0.1em",
-            padding: isCalculation ? "0 0.25em" : "0",
-          }}
-        />
-      );
-    } catch (err) {
-      console.warn('KaTeX rendering error:', err);
-      // Just return the original text without $ signs for inline math
-      const cleanText = latex.replace(/^\$|\$$/g, '');
-      return (
-        <span key={`latex-text-${partKey++}`}>
-          {cleanText}
-        </span>
-      );
-    }
-  };
-
-  let match;
-  while ((match = latexRegex.exec(processedText)) !== null) {
-    // Add text before the match
-    if (match.index > lastIndex) {
-      const normalText = processedText.substring(lastIndex, match.index);
-      parts.push(...processBold(normalText, `text-${partKey++}`));
-    }
-
-    let latexContent = match[0];
-    let isDisplay = false;
-    let isCalculation = false;
-
-    // Determine type and extract content
-    if (latexContent.startsWith('\\[') && latexContent.endsWith('\\]')) {
-      isDisplay = true;
-      latexContent = latexContent.slice(2, -2);
-    } else if (latexContent.startsWith('\\(') && latexContent.endsWith('\\)')) {
-      latexContent = latexContent.slice(2, -2);
-    } else if (latexContent.startsWith('$$') && latexContent.endsWith('$$')) {
-      isDisplay = true;
-      latexContent = latexContent.slice(2, -2);
-    } else if (latexContent.startsWith('$') && latexContent.endsWith('$')) {
-      latexContent = latexContent.slice(1, -1);
-    } else if (latexContent.startsWith('<<') && latexContent.endsWith('>>')) {
-      isCalculation = true;
-      latexContent = latexContent.slice(2, -2);
-    } else if (latexContent.startsWith('\\boxed{')) {
-      // Keep \boxed as is
-      latexContent = latexContent;
-    }
-
-    if (latexContent.trim()) {
-      parts.push(renderKatex(latexContent, isDisplay, isCalculation));
-    }
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  // Add remaining text after last match
-  if (lastIndex < processedText.length) {
-    const remainingText = processedText.substring(lastIndex);
-    parts.push(...processBold(remainingText, `text-${partKey++}`));
-  }
-
-  // Restore dollar amounts
-  const result = parts.map((part, idx) => {
-  if (typeof part === 'object' && part && 'props' in part && 'children' in (part as any).props && typeof (part as any).props.children === 'string') {
-    const text = (part as { props: { children: string } }).props.children;
-      const restoredText = text.replace(/__DOLLAR_(\d+)__/g, (_, index) => dollarAmounts[parseInt(index)]);
-      if (restoredText !== text) {
-        return <span key={`restored-${idx}`}>{restoredText}</span>;
-      }
-    }
-    return part;
-  });
-
-  return result.length > 0 ? <>{result}</> : <span>{text}</span>;
-};
-
-  const getStartingRound = (): number => {
-    if (!currentRun?.performance_data || !Array.isArray(currentRun.performance_data)) {
-      return 1;
-    }
-    
-    // Get the first round number from performance_data
-    const firstPerfRound = currentRun.performance_data[0];
-    if (firstPerfRound) {
-      const roundKey = Object.keys(firstPerfRound)[0];
-      const match = roundKey.match(/round_(\d+)/);
-      if (match) {
-        return parseInt(match[1]);
-      }
-    }
-    
-    return 1;
-  };
-
-const startingRound = getStartingRound();
-  const processBold = (text: string, startKey: number): React.ReactNode[] => {
-    const boldRegex = /\*\*(.*?)\*\*/g;
-    const parts: React.ReactNode[] = [];
-    let lastIndex = 0;
-    let match;
-    let keyIndex = startKey;
-
-    while ((match = boldRegex.exec(text)) !== null) {
-      if (match.index > lastIndex) {
-        parts.push(
-          <span key={`text-${keyIndex++}`}>
-            {text.substring(lastIndex, match.index)}
-          </span>
-        );
-      }
-
-      parts.push(<strong key={`bold-${keyIndex++}`}>{match[1]}</strong>);
-
-      lastIndex = match.index + match[0].length;
-    }
-
-    if (lastIndex < text.length) {
-      parts.push(
-        <span key={`text-${keyIndex++}`}>{text.substring(lastIndex)}</span>
-      );
-    }
-
-    return parts;
-  };
-
-  const handlePrevious = () => {
-    const currentIndex = filteredQuestions.indexOf(selectedQuestion);
-    if (currentIndex > 0) {
-      setSelectedQuestion(filteredQuestions[currentIndex - 1]);
-    }
-  };
+    });
+    setEvaluationResults(evals);
+  }, [selectedQuestionIndex, currentRun]);
 
   const handleNext = () => {
-    const currentIndex = filteredQuestions.indexOf(selectedQuestion);
-    if (currentIndex < filteredQuestions.length - 1) {
-      setSelectedQuestion(filteredQuestions[currentIndex + 1]);
-    }
+    const currPos = filteredQuestionIndices.indexOf(selectedQuestionIndex);
+    if (currPos < filteredQuestionIndices.length - 1) setSelectedQuestionIndex(filteredQuestionIndices[currPos + 1]);
+  };
+  const handlePrev = () => {
+    const currPos = filteredQuestionIndices.indexOf(selectedQuestionIndex);
+    if (currPos > 0) setSelectedQuestionIndex(filteredQuestionIndices[currPos - 1]);
   };
 
-  // Loading/Error states
-  if (loading) return <LoadingState />;
-  if (error) return <ErrorState error={error} />;
-  if (!debateData?.runs || debateData.runs.length === 0) {
-    return <ErrorState error="No debate data found." />;
-  }
-  if (!currentRun) return null;
-
-  const parsedArgs = currentRun.wandb_metadata?.parsed_args || {};
-  const numRounds = (parsedArgs as any)["checkpoint.frequency"]
-    ? (parsedArgs["experiment.num_rounds"] || 0) + 1
-    : parsedArgs["experiment.num_rounds"] || 0;
-  const experimentName = parsedArgs["experiment.name"] || "Experiment";
-  const actualAgentNames = currentRun.result_data?.[0]?.debate_session
-    ?.rounds?.[0]?.responses
-    ? Object.keys(currentRun.result_data[0].debate_session.rounds[0].responses)
+  const currentQuestionData = safeGetQuestions(currentRun?.result_data)[selectedQuestionIndex];
+  const actualAgentNames = currentQuestionData?.debate_session?.rounds?.[0]?.responses 
+    ? Object.keys(currentQuestionData.debate_session.rounds[0].responses) 
     : [];
+  const currentSwitches = incorrectSwitches.filter(s => s.questionIndex === selectedQuestionIndex);
 
-  const currentQuestionData = currentRun.result_data?.[selectedQuestion];
-  const currentQuestionIndex = filteredQuestions.indexOf(selectedQuestion);
-  const currentQuestionSwitches = incorrectSwitches.filter(
-    (s) => s.questionIndex === selectedQuestion
-  );
-
-  const totalRuns = debateData?.runs?.length || 0;
-  const tabs = [
-    { id: "questions", label: "Debates", icon: Scale },
-    { id: "filter-incorrect", label: "Analysis", icon: TrendingDown },
-    { id: "performance", label: "Performance", icon: Trophy },
-  ];
+  if (loading) return <div className="h-screen flex items-center justify-center text-slate-400">Loading data...</div>;
+  if (!currentRun) return <div className="h-screen flex items-center justify-center text-slate-400">No data found.</div>;
 
   return (
-    <div className="debate-details-page">
-      {/* Header */}
-      <div className="debate-header">
-        <div className="header-content">
-          <button
-            onClick={() => (window.location.href = "/dashboard")}
-            className="back-button"
-          >
-            <ArrowLeft />
-            Back to Dashboard
-          </button>
-          <h1 className="header-title">{experimentName}</h1>
+    <div className="flex h-screen w-full bg-[#f8f9fc] text-slate-800 font-sans overflow-hidden">
+      
+      <aside className="w-80 bg-white border-r border-slate-200 flex flex-col flex-shrink-0 z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+        <div className="p-4 border-b border-slate-100 flex items-center gap-3">
+            <button onClick={() => router.push('/dashboard')} className="p-2 hover:bg-slate-50 rounded-lg text-slate-500 transition-colors">
+                <ArrowLeft size={18} />
+            </button>
+            <h2 className="font-bold text-slate-700 truncate text-sm" title={currentRun.wandb_metadata?.parsed_args?.["experiment.name"]}>
+                {currentRun.wandb_metadata?.parsed_args?.["experiment.name"] || "Experiment"}
+            </h2>
         </div>
-      </div>
 
-      <div className="debate-container">
-        {/* Tab Navigation */}
-        <div className="tab-navigation">
-          <div className="tabs-container">
-            {tabs.map((tab) => {
-              const Icon = tab.icon;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`tab-button ${
-                    activeTab === tab.id ? "active" : ""
-                  }`}
+        <div className="p-4 bg-slate-50/50 border-b border-slate-100 space-y-3">
+             <div className="bg-slate-200 p-1 rounded-lg flex">
+                <button 
+                    onClick={() => setViewMode('debate')}
+                    className={`flex-1 flex items-center justify-center gap-2 py-1.5 text-xs font-bold rounded-md transition-all ${viewMode === 'debate' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                 >
-                  <Icon />
-                  <span>{tab.label}</span>
+                    <MessageSquare size={14} /> Debate
                 </button>
-              );
-            })}
-          </div>
-        </div>
+                <button 
+                    onClick={() => setViewMode('performance')}
+                    className={`flex-1 flex items-center justify-center gap-2 py-1.5 text-xs font-bold rounded-md transition-all ${viewMode === 'performance' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                    <BarChart3 size={14} /> Metrics
+                </button>
+             </div>
 
-        {/* Content */}
-        {(activeTab === "questions" || activeTab === "filter-incorrect") && (
-          <div>
-            <QuestionNavigator
-              currentIndex={currentQuestionIndex}
-              total={filteredQuestions.length}
-              onPrevious={handlePrevious}
-              onNext={handleNext}
-              showRunFilter={activeTab === "questions"}
-              selectedRun={selectedRun}
-              totalRuns={totalRuns}
-              onRunChange={setSelectedRun}
-              debateData={debateData ?? null}
-            />
-
-            {filteredQuestions.length === 0 ? (
-              <div className="empty-state">
-                <AlertCircle />
-                <h3>
-                  {activeTab === "filter-incorrect"
-                    ? "No Incorrect Switches Found"
-                    : "No Questions Found"}
-                </h3>
-                <p>
-                  {activeTab === "filter-incorrect"
-                    ? "There are no questions where agents switched from correct to incorrect answers."
-                    : "No questions match the current filter."}
-                </p>
-              </div>
-            ) : (
-              currentQuestionData && (
-                <>
-                  {/* Question Display */}
-                  <div className="content-card">
-                    <div className="card-header">
-                      <h3>Question {selectedQuestion + 1}</h3>
-                    </div>
-
-                    {activeTab === "filter-incorrect" &&
-                      currentQuestionSwitches.length > 0 && (
-                        <div className="switch-warning">
-                          <div className="warning-header">
-                            <AlertCircle />
-                            Incorrect Switches
-                          </div>
-                          <div className="switch-list">
-                            {currentQuestionSwitches.map((switchInfo, idx) => (
-                              <div key={idx} className="switch-item">
-                                <span className="agent-name">
-                                  {switchInfo.agentName}
-                                </span>{" "}
-                                switched from correct (Round{" "}
-                                {switchInfo.switchedFromRound + 1}) to incorrect
-                                (Round {switchInfo.switchedToRound + 1})
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                    <div className="question-content">
-                      <div className="question-text">
-                        <div className="question-body">
-                          {currentQuestionData.question}
-                        </div>
-                      </div>
-                      <div className="correct-answer">
-                        <h4>Correct Answer:</h4>
-                        <div className="answer-body">
-                          {renderLatex(currentQuestionData.correct_answer)}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Agent Responses */}
-                  <div className="content-card">
-                    <div className="card-header">
-                      <h3>Agent Responses</h3>
-                    </div>
-
-                    <div className="rounds-container">
-                      {currentQuestionData.debate_session?.rounds?.map((round: any, roundIndex: number) => {
-                      const actualRoundNumber = startingRound + roundIndex;
-                      const isLastRoundInData = roundIndex === currentQuestionData.debate_session.rounds.length - 1;
-                                            
-                      return (
-                        <div key={roundIndex} className="round-section">
-                          <h4 className="round-header">
-                            Round {actualRoundNumber}
-                            {isLastRoundInData && (
-                              <span className="round-label">(Final)</span>
-                            )}
-                          </h4>
-
-                            <div className="responses-grid">
-                              {actualAgentNames.map((agentName) => {
-                                const response = round.responses[agentName] || "";
-                                const evaluationKey = `${agentName}_${roundIndex}`;
-                                const evaluation = evaluationResults[evaluationKey];
-                                const hasSwitched = currentQuestionSwitches.some(
-                                  (s) =>
-                                    s.agentName === agentName &&
-                                    (s.switchedFromRound === roundIndex ||
-                                      s.switchedToRound === roundIndex)
-                                );
-
-                                return (
-                                  <AgentResponse
-                                    key={evaluationKey}
-                                    agentName={agentName}
-                                    response={response}
-                                    evaluation={evaluation}
-                                    roundIndex={roundIndex}
-                                    isCollapsed={collapsedAgents[evaluationKey] || false}
-                                    hasSwitched={hasSwitched}
-                                    questionIndex={selectedQuestion}
-                                    onToggleCollapse={() =>
-                                      setCollapsedAgents((prev) => ({
-                                        ...prev,
-                                        [evaluationKey]: !prev[evaluationKey],
-                                      }))
-                                    }
-                                    renderLatex={renderLatex}
-                                  />
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </>
-              )
-            )}
-          </div>
-        )}
-
-        {/* Performance Tab */}
-        {activeTab === "performance" && (
-        <div className="content-card">
-          <div className="card-header">
-            <BarChart3 />
-            <h3>Performance Over Rounds</h3>
-          </div>
-          <div className="performance-grid">
-            {currentRun.performance_data?.map((roundObj: any, index: number) => {
-              // Get the round key (e.g., "round_3")
-              const roundKey = Object.keys(roundObj)[0];
-              const roundData = roundObj[roundKey] || {};
-              const roundNumber = parseInt(roundKey.replace('round_', ''));
-              const majorityVote = roundData.majority_vote ?? 0;
-
-              return (
-                <div key={roundKey} className="performance-round">
-                  <div className="round-title-bar">
-                    <span className="round-label">Round {roundNumber}</span>
-                    <span className="majority-score">
-                      {(majorityVote * 100).toFixed(1)}% Majority Vote
-                    </span>
-                  </div>
-                  <div className="agents-performance">
-                    {Object.entries(roundData)
-                      .filter(([key]) => key !== "majority_vote")
-                      .map(([agentKey, score]) => (
-                        <div key={agentKey} className="agent-score-card">
-                          <span className="agent-label">{agentKey}</span>
-                          <span className="score-value">
-                            {((score as number) * 100).toFixed(1)}%
-                          </span>
-                        </div>
-                      ))}
-                  </div>
+             <div className="flex items-center justify-between">
+                 <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Filter List</span>
+                 <span className="text-xs font-mono text-slate-400">{filteredQuestionIndices.length} items</span>
+             </div>
+             <label className="flex items-center gap-3 cursor-pointer p-3 rounded-lg border border-transparent hover:bg-white hover:border-slate-200 transition-all select-none">
+                <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${showRegressionsOnly ? 'bg-red-500 border-red-500 text-white' : 'border-slate-300 bg-white'}`}>
+                    {showRegressionsOnly && <Check size={12} />}
                 </div>
-              );
-            })}
-          </div>
+                <input type="checkbox" className="hidden" checked={showRegressionsOnly} onChange={e => setShowRegressionsOnly(e.target.checked)} />
+                <span className={`text-sm ${showRegressionsOnly ? "text-red-700 font-bold" : "text-slate-600"}`}>
+                    Show Regressions Only
+                </span>
+             </label>
         </div>
-      )}
-      </div>
+
+        <div className="flex-1 overflow-y-auto">
+            {filteredQuestionIndices.length > 0 ? (
+                filteredQuestionIndices.map(idx => (
+                    <SidebarItem 
+                        key={idx} 
+                        index={idx} 
+                        isActive={selectedQuestionIndex === idx} 
+                        hasSwitch={incorrectSwitches.some(s => s.questionIndex === idx)}
+                        onClick={() => setSelectedQuestionIndex(idx)}
+                    />
+                ))
+            ) : (
+                <div className="p-10 text-center">
+                    <div className="inline-flex p-3 rounded-full bg-slate-100 text-slate-400 mb-3"><Database size={24} /></div>
+                    <p className="text-sm text-slate-400">No questions match your filter.</p>
+                </div>
+            )}
+        </div>
+      </aside>
+
+      <main className="flex-1 flex flex-col min-w-0 bg-[#f8f9fc]">
+         
+         <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-[0_2px_12px_rgba(0,0,0,0.02)] z-10 sticky top-0">
+             <div className="flex items-center gap-4">
+                 <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-lg text-sm text-slate-600 border border-slate-200">
+                    <Database size={14} />
+                    <span className="font-medium">Run:</span>
+                    {debateData?.runs && debateData.runs.length > 1 ? (
+                        <select 
+                            value={selectedRunIndex}
+                            onChange={(e) => setSelectedRunIndex(parseInt(e.target.value))}
+                            className="bg-transparent border-none p-0 text-slate-900 font-bold focus:ring-0 cursor-pointer text-sm outline-none pl-1"
+                        >
+                            {debateData.runs.map((run: any, i: number) => (
+                                <option key={i} value={i}>
+                                    {getDatasetDisplayName(run.dataset_name || "Unknown")} (Seed {run.seed})
+                                </option>
+                            ))}
+                        </select>
+                    ) : (
+                        <span className="font-bold text-slate-900">
+                            {getDatasetDisplayName(currentRun.dataset_name || "Default")}
+                        </span>
+                    )}
+                 </div>
+             </div>
+
+             {viewMode === 'debate' && (
+                 <div className="flex items-center gap-2 bg-white p-1 rounded-lg border border-slate-200 shadow-sm">
+                     <button 
+                        onClick={handlePrev} 
+                        disabled={filteredQuestionIndices.indexOf(selectedQuestionIndex) <= 0}
+                        className="p-1.5 rounded-md hover:bg-slate-50 disabled:opacity-30 transition-all text-slate-600"
+                     >
+                        <ChevronLeft size={18} />
+                     </button>
+                     <span className="px-4 text-sm font-mono font-medium text-slate-600 min-w-[100px] text-center border-x border-slate-100">
+                        {selectedQuestionIndex + 1} / {safeGetQuestions(currentRun.result_data).length}
+                     </span>
+                     <button 
+                        onClick={handleNext} 
+                        disabled={filteredQuestionIndices.indexOf(selectedQuestionIndex) >= filteredQuestionIndices.length - 1}
+                        className="p-1.5 rounded-md hover:bg-slate-50 disabled:opacity-30 transition-all text-slate-600"
+                     >
+                        <ChevronRight size={18} />
+                     </button>
+                 </div>
+             )}
+         </header>
+
+         <div className="flex-1 overflow-y-auto p-6 scroll-smooth">
+            {viewMode === 'performance' ? (
+                <div className="max-w-5xl mx-auto space-y-6">
+                     <div className="bg-white rounded-xl border border-slate-200 p-8 shadow-sm">
+                        <div className="flex items-center gap-4 mb-8 border-b border-slate-100 pb-6">
+                            <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl"><BarChart3 size={24} /></div>
+                            <div>
+                                <h2 className="text-xl font-bold text-slate-900">Performance Metrics</h2>
+                                <p className="text-slate-500 text-sm">Individual agent accuracy across debate rounds.</p>
+                            </div>
+                        </div>
+                        <div className="grid gap-6">
+                             {currentRun.performance_data?.map((roundObj: any, idx: number) => {
+                                 const roundKey = Object.keys(roundObj)[0];
+                                 const roundData = roundObj[roundKey] || {};
+                                 const majorityVote = roundData.majority_vote ?? 0;
+                                 
+                                 return (
+                                     <div key={idx} className="border border-slate-100 rounded-xl p-6 bg-slate-50/30">
+                                         <div className="flex justify-between items-center mb-4">
+                                             <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Round {idx + 1}</span>
+                                             <div className="flex items-baseline gap-2">
+                                                 <span className="text-2xl font-bold text-slate-800">{(majorityVote * 100).toFixed(1)}%</span>
+                                                 <span className="text-sm font-medium text-slate-500">Majority Vote</span>
+                                             </div>
+                                         </div>
+                                         
+                                         <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden mb-6">
+                                             <div className="h-full bg-indigo-600 rounded-full transition-all duration-1000" style={{ width: `${majorityVote * 100}%` }} />
+                                         </div>
+
+                                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                              {Object.entries(roundData)
+                                                .filter(([k]) => k !== 'majority_vote')
+                                                .map(([agent, score]: any) => (
+                                                  <div key={agent} className="bg-white rounded-lg p-3 border border-slate-200 shadow-sm flex items-center justify-between">
+                                                      <div className="flex items-center gap-2 overflow-hidden">
+                                                          <div className="w-6 h-6 rounded bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-600 shrink-0">
+                                                              {agent.charAt(0).toUpperCase()}
+                                                          </div>
+                                                          <div className="text-xs font-medium text-slate-600 truncate" title={agent}>{agent}</div>
+                                                      </div>
+                                                      <div className={`text-sm font-bold font-mono ${(score >= 0.8) ? 'text-emerald-600' : (score < 0.5) ? 'text-rose-600' : 'text-slate-700'}`}>
+                                                          {(score * 100).toFixed(0)}%
+                                                      </div>
+                                                  </div>
+                                              ))}
+                                         </div>
+                                     </div>
+                                 );
+                             })}
+                        </div>
+                     </div>
+                </div>
+            ) : (
+                <div className="max-w-4xl mx-auto space-y-6 pb-20">
+                    {currentSwitches.length > 0 && (
+                        <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3 animate-in fade-in slide-in-from-top-2 shadow-sm">
+                            <div className="bg-white p-1.5 rounded-full shadow-sm"><AlertOctagon className="text-red-600" size={18} /></div>
+                            <div>
+                                <h4 className="text-sm font-bold text-red-900">Regression Detected</h4>
+                                <div className="text-sm text-red-800 mt-1 space-y-1">
+                                    {currentSwitches.map((s, i) => (
+                                        <div key={i}>
+                                            <span className="font-bold bg-white/50 px-1 rounded">{s.agentName}</span> switched from <span className="font-bold text-emerald-700">Correct</span> to <span className="font-bold text-red-700">Incorrect</span> in Round {s.switchedToRound + 1}.
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+                            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Question</h3>
+                            <div className="flex items-center gap-1 text-slate-400 text-xs font-mono">
+                                <Hash size={12} /> {selectedQuestionIndex}
+                            </div>
+                        </div>
+                        <div className="p-6">
+                            <div className="text-lg text-slate-800 font-medium leading-relaxed mb-6">
+                                <LatexRenderer text={currentQuestionData?.question || ""} />
+                            </div>
+                            
+                            <div className="bg-emerald-50/80 rounded-lg p-4 border border-emerald-100/50">
+                                <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider mb-1 block">Correct Answer</span>
+                                <div className="text-emerald-900 font-mono text-sm">
+                                    <LatexRenderer text={currentQuestionData?.correct_answer || ""} />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="space-y-8 mt-10">
+                        {currentQuestionData?.debate_session?.rounds?.map((round: any, rIdx: number) => (
+                            <div key={rIdx} className="relative">
+                                {/* Round Header */}
+                                <div className="flex items-center gap-4 mb-5">
+                                    <div className="h-px bg-slate-200 flex-1" />
+                                    <span className="text-xs font-bold text-slate-400 uppercase tracking-widest bg-[#f8f9fc] px-3">
+                                        Round {rIdx + 1}
+                                    </span>
+                                    <div className="h-px bg-slate-200 flex-1" />
+                                </div>
+
+                                {actualAgentNames.map(agent => {
+                                    const evalKey = `${agent}_${rIdx}`;
+                                    const regressionHere = currentSwitches.some(s => s.agentName === agent && s.switchedToRound === rIdx);
+                                    
+                                    return (
+                                        <AgentCard 
+                                            key={evalKey}
+                                            agentName={agent}
+                                            response={round.responses[agent]}
+                                            evaluation={evaluationResults[evalKey]}
+                                            isRegressionPoint={regressionHere}
+                                            defaultCollapsed={true} 
+                                        />
+                                    );
+                                })}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+         </div>
+      </main>
     </div>
   );
 }

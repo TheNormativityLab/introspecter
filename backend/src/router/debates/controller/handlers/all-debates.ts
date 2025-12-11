@@ -12,10 +12,8 @@ export const getAllDebates = async (
     logger.info(`Attempt to retrieve all debates`);
 
     const totalDebates = await prisma.debate.count();
-    logger.info(`Total debates in database: ${totalDebates}`);
 
     if (totalDebates === 0) {
-      logger.info("No debates found in database");
       return res.json({
         success: true,
         experiment_groups: [],
@@ -29,24 +27,18 @@ export const getAllDebates = async (
     const allDebates = await prisma.debate.findMany({
       where: {
         AND: [
-          {
-            wandbMetadata: {
-              not: null,
-            },
-          },
-          {
-            wandbMetadata: {
-              not: {},
-            },
-          },
-          {
-            seed: {
-              not: null,
-            },
-          },
+          { wandbMetadata: { not: null } },
+          { wandbMetadata: { not: {} } },
+          { seed: { not: null } },
         ],
       },
-      include: {
+      select: {
+        id: true,
+        status: true,
+        seed: true,
+        datasetName: true,
+        wandbMetadata: true,
+        processedAt: true,
         llmConfigs: {
           select: {
             id: true,
@@ -72,8 +64,7 @@ export const getAllDebates = async (
     );
     const experimentGroups = new Map();
 
-    allDebates.forEach((debate) => {
-      // Extract experiment name from the new structure
+    for (const debate of allDebates) {
       let experimentName = extractExperimentName(
         debate.wandbMetadata,
         debate.llmConfigs
@@ -86,18 +77,7 @@ export const getAllDebates = async (
           experiment_name: experimentName,
           dataset_name: debate.datasetName,
           model_config: {
-            LLM: debate.llmConfigs.map((config) => ({
-              id: config.id,
-              modelName: config.modelName,
-              model: config.model,
-              apiBase: config.apiBase,
-              timeout: config.timeout,
-              numRetries: config.numRetries,
-              rpm: config.rpm,
-              topP: config.topP,
-              maxTokens: config.maxTokens,
-              temperature: config.temperature,
-            })),
+            LLM: debate.llmConfigs,
           },
           runs: [],
           total_runs: 0,
@@ -121,7 +101,9 @@ export const getAllDebates = async (
         processed_at: debate.processedAt,
       });
 
-      group.seeds_present.add(debate.seed);
+      if (debate.seed !== null) {
+        group.seeds_present.add(debate.seed);
+      }
 
       group.total_runs++;
       if (debate.status === "completed") group.completed_runs++;
@@ -133,16 +115,16 @@ export const getAllDebates = async (
       if (debate.processedAt < group.created_at) {
         group.created_at = debate.processedAt;
       }
-    });
+    }
 
     const consolidatedExperiments = Array.from(experimentGroups.values()).map(
       (group) => {
         const seedsPresent = Array.from(group.seeds_present)
           .map(Number)
-          .sort((a, b) => a - b);
+          .sort((a: any, b: any) => a - b);
         const missingSeeds = group.expected_seeds
           ? group.expected_seeds.filter(
-              (seed) => !group.seeds_present.has(seed)
+              (seed: any) => !group.seeds_present.has(seed)
             )
           : [];
 
@@ -153,10 +135,10 @@ export const getAllDebates = async (
 
         return {
           ...group,
-          runs: group.runs.sort((a, b) => a.seed - b.seed),
+          runs: group.runs.sort((a: any, b: any) => a.seed - b.seed),
           seeds_present: seedsPresent,
           missing_seeds: missingSeeds,
-          is_complete: group.runs.every((run) => run.status === "completed"),
+          is_complete: group.runs.every((run: any) => run.status === "completed"),
           success_rate,
         };
       }
@@ -309,18 +291,42 @@ export const getSingleDebate = async (
       });
     }
 
-    let matchingDebates = await prisma.debate.findMany({
+    const candidateDebates = await prisma.debate.findMany({
       where: {
         AND: [
-          {
-            wandbMetadata: {
-              not: null,
-            },
-          },
-          {
-            seed: seedNumber,
-          },
+          { wandbMetadata: { not: null } },
+          { seed: seedNumber },
         ],
+      },
+      select: {
+        id: true,
+        wandbMetadata: true,
+        llmConfigs: {
+          select: { modelName: true },
+        },
+      },
+    });
+
+    const targetIds = candidateDebates
+      .filter((debate) => {
+        const debateExperimentName = extractExperimentName(
+          debate.wandbMetadata,
+          debate.llmConfigs
+        );
+        return debateExperimentName === experimentNameValue;
+      })
+      .map((d) => d.id);
+
+    if (targetIds.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `No runs found for experiment '${experimentNameValue}' with seed ${seedNumber}`,
+      });
+    }
+
+    const matchingDebates = await prisma.debate.findMany({
+      where: {
+        id: { in: targetIds },
       },
       include: {
         llmConfigs: {
@@ -342,21 +348,6 @@ export const getSingleDebate = async (
         processedAt: "desc",
       },
     });
-
-    matchingDebates = matchingDebates.filter((debate) => {
-      const debateExperimentName = extractExperimentName(
-        debate.wandbMetadata,
-        debate.llmConfigs
-      );
-      return debateExperimentName === experimentNameValue;
-    });
-
-    if (matchingDebates.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: `No runs found for experiment '${experimentNameValue}' with seed ${seedNumber}`,
-      });
-    }
 
     const transformedRuns = matchingDebates.map((debate) => ({
       _id: debate.id,
@@ -515,81 +506,44 @@ export const debugDatabase = async (
     const debatesWithWandb = await prisma.debate.count({
       where: {
         AND: [
-          {
-            wandbMetadata: {
-              not: null,
-            },
-          },
-          {
-            wandbMetadata: {
-              not: {},
-            },
-          },
+          { wandbMetadata: { not: null } },
+          { wandbMetadata: { not: {} } },
         ],
       },
     });
 
     const debatesWithSeed = await prisma.debate.count({
-      where: {
-        seed: {
-          not: null,
-        },
-      },
+      where: { seed: { not: null } },
     });
 
     const debatesWithDatasetName = await prisma.debate.count({
-      where: {
-        datasetName: {
-          not: null,
-        },
-      },
+      where: { datasetName: { not: null } },
     });
 
     const seedCounts = await prisma.debate.groupBy({
       by: ["seed"],
-      _count: {
-        seed: true,
-      },
-      where: {
-        seed: {
-          not: null,
-        },
-      },
-      orderBy: {
-        _count: {
-          seed: "desc",
-        },
-      },
+      _count: { seed: true },
+      where: { seed: { not: null } },
+      orderBy: { _count: { seed: "desc" } },
     });
 
     const statusCounts = await prisma.debate.groupBy({
       by: ["status"],
-      _count: {
-        status: true,
-      },
-      orderBy: {
-        _count: {
-          status: "desc",
-        },
-      },
+      _count: { status: true },
+      orderBy: { _count: { status: "desc" } },
     });
 
     const sampleDebates = await prisma.debate.findMany({
       where: {
         AND: [
-          {
-            wandbMetadata: {
-              not: null,
-            },
-          },
-          {
-            wandbMetadata: {
-              not: {},
-            },
-          },
+          { wandbMetadata: { not: null } },
+          { wandbMetadata: { not: {} } },
         ],
       },
-      include: {
+      select: {
+        id: true,
+        status: true,
+        processedAt: true,
         llmConfigs: {
           select: {
             id: true,
@@ -597,9 +551,7 @@ export const debugDatabase = async (
           },
         },
       },
-      orderBy: {
-        processedAt: "desc",
-      },
+      orderBy: { processedAt: "desc" },
       take: 5,
     });
 
@@ -609,14 +561,10 @@ export const debugDatabase = async (
         modelName: true,
         model: true,
         _count: {
-          select: {
-            debates: true,
-          },
+          select: { debates: true },
         },
       },
-      orderBy: {
-        id: "asc",
-      },
+      orderBy: { id: "asc" },
       take: 5,
     });
 

@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { Send, X, Bot, Clock } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { Send, X, Bot, User, Sparkles } from "lucide-react";
 
 interface PreviousRounds {
   [roundKey: string]: {
@@ -14,10 +14,11 @@ interface HumanInputModalProps {
     question_prompt?: string;
     round_number?: number;
     agent_index?: number;
-    previous_responses?: string[]; // Old format (deprecated)
-    previous_rounds?: PreviousRounds; // New format
-    replace_agent_name?: string; // Model type (for backward compatibility)
-    replaced_agent_specific_name?: string; // NEW: Exact agent name being replaced
+    previous_responses?: string[] | { [key: string]: string };
+    previous_rounds?: PreviousRounds;
+    history?: any[];
+    replace_agent_name?: string;
+    replaced_agent_specific_name?: string;
   };
   onSubmit: (responseText: string, extractedAnswer: string) => void;
   onClose: () => void;
@@ -30,15 +31,22 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
   onClose,
 }) => {
   const [responseText, setResponseText] = useState("");
-  const [extractedAnswer, setExtractedAnswer] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [katexLoaded, setKatexLoaded] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isOpen && scrollRef.current) {
+      setTimeout(() => {
+        if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }, 100);
+    }
+  }, [isOpen]);
 
   useEffect(() => {
     if (!(window as any).katex) {
       const script = document.createElement("script");
-      script.src =
-        "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js";
+      script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js";
       script.onload = () => setKatexLoaded(true);
       document.body.appendChild(script);
 
@@ -54,29 +62,24 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
   if (!isOpen) return null;
 
   const handleSubmit = async () => {
-    if (!responseText.trim()) {
-      alert("Please enter a response");
-      return;
-    }
-
+    if (!responseText.trim()) return;
     setIsSubmitting(true);
     try {
-      await onSubmit(responseText, extractedAnswer);
+      await onSubmit(responseText, "");
       setResponseText("");
-      setExtractedAnswer("");
     } catch (error) {
       console.error("Error submitting response:", error);
-      alert("Failed to submit response. Please try again.");
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Helper to format agent names nicely
   const formatAgentName = (agentName: string): string => {
+    if (!agentName) return "Unknown Agent";
     const parts = agentName.split('_agent_');
     if (parts.length === 2) {
       const modelName = parts[0]
+        .replace(/_/g, ' ')
         .replace(/-/g, ' ')
         .split(' ')
         .map(word => word.charAt(0).toUpperCase() + word.slice(1))
@@ -86,609 +89,215 @@ const HumanInputModal: React.FC<HumanInputModalProps> = ({
     return agentName;
   };
 
- const isReplacedAgent = (agentName: string): boolean => {
-  if (questionData.replaced_agent_specific_name) {
-    return agentName === questionData.replaced_agent_specific_name;
-  }  
-  if (!questionData.replace_agent_name) return false;
-  
-  const agentModel = agentName.split('_agent_')[0].toLowerCase();
-  const replacedModel = questionData.replace_agent_name.toLowerCase().replace(/_/g, '-');
-  return agentModel === replacedModel;
-};
+  const isReplacedAgent = (agentName: string): boolean => {
+    if (questionData.replaced_agent_specific_name) {
+      return agentName === questionData.replaced_agent_specific_name;
+    }
+    if (!questionData.replace_agent_name) return false;
+    
+    const agentModel = agentName.split('_agent_')[0].toLowerCase();
+    const replacedModel = questionData.replace_agent_name.toLowerCase().replace(/_/g, '-');
+    return agentModel === replacedModel || agentName.includes(replacedModel);
+  };
 
   const renderLatex = (text: string) => {
-    if (!katexLoaded || !(window as any).katex) {
-      return <span>{text}</span>;
-    }
+    if (!text) return null;
+    if (!text.includes('\\') && !text.includes('$')) return <span style={{whiteSpace: "pre-wrap"}}>{text}</span>;
+    const parts = text.split(/(\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|(?:\$\$[\s\S]*?\$\$)|(?:\$[^\$\n]+?\$))/g);
 
-    // Enhanced regex to also match standalone LaTeX commands like \boxed{}, \frac{}{}, etc.
-    const latexRegex =
-      /\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)|\$\$([\s\S]*?)\$\$|\$([^\$\n]+?)\$|\\(?:boxed|frac|quad|text|sqrt|sum|int|infty|alpha|beta|gamma|delta|theta|pi|times|cdot|leq|geq|neq|approx)\{[^}]*\}(?:\{[^}]*\})?|\\(?:quad|qquad|,|;|!|left|right)/g;
+    return (
+      <span style={{whiteSpace: "pre-wrap"}}>
+        {parts.map((part, index) => {
+          if (part.startsWith('\\[') || part.startsWith('\\(') || part.startsWith('$$') || part.startsWith('$')) {
+            let math = part;
+            let displayMode = false;
 
-    let lastIndex = 0;
-    let match;
-    const parts: React.ReactNode[] = [];
-    let partKey = 0;
+            if (part.startsWith('\\[')) {
+              math = part.slice(2, -2);
+              displayMode = true;
+            } else if (part.startsWith('\\(')) {
+              math = part.slice(2, -2);
+            } else if (part.startsWith('$$')) {
+              math = part.slice(2, -2);
+              displayMode = true;
+            } else if (part.startsWith('$')) {
+              math = part.slice(1, -1);
+            }
 
-    while ((match = latexRegex.exec(text)) !== null) {
-      if (match.index > lastIndex) {
-        const normalText = text.substring(lastIndex, match.index);
-        parts.push(...processBold(normalText, partKey));
-        partKey += normalText.length;
-      }
-
-      // Check if this is a delimited expression or standalone command
-      const latex = match[1] || match[2] || match[3] || match[4] || match[0];
-      const isDisplay = !!(match[1] || match[3]);
-      
-      // If it's a standalone command (match[0] but no group matches), wrap it in inline math
-      const isStandaloneCommand = !match[1] && !match[2] && !match[3] && !match[4];
-
-      try {
-        const html = (window as any).katex.renderToString(latex, {
-          displayMode: isDisplay,
-          throwOnError: false,
-          output: "html",
-        });
-        parts.push(
-          <span
-            key={`latex-${partKey++}`}
-            dangerouslySetInnerHTML={{ __html: html }}
-            style={{
-              display: isDisplay ? "block" : "inline",
-              margin: isDisplay ? "0.5em 0" : "0",
-            }}
-          />
-        );
-      } catch (err) {
-        parts.push(
-          <span
-            key={`latex-error-${partKey++}`}
-            style={{
-              color: "#b91c1c",
-              fontFamily: "monospace",
-            }}
-          >
-            {match[0]}
-          </span>
-        );
-      }
-
-      lastIndex = match.index + match[0].length;
-    }
-
-    if (lastIndex < text.length) {
-      const remainingText = text.substring(lastIndex);
-      parts.push(...processBold(remainingText, partKey));
-    }
-
-    return <>{parts}</>;
+            try {
+              if (katexLoaded && (window as any).katex) {
+                const html = (window as any).katex.renderToString(math, {
+                  displayMode,
+                  throwOnError: false,
+                  output: "html",
+                });
+                return <span key={index} dangerouslySetInnerHTML={{ __html: html }} />;
+              }
+            } catch (e) {
+              return <span key={index}>{part}</span>;
+            }
+          }
+          
+          if (part.includes('\\boxed{')) {
+             const boxedParts = part.split(/(\\boxed\{[^}]+\})/g);
+             return (
+                <span key={index}>
+                    {boxedParts.map((bp, bpi) => {
+                        if (bp.startsWith('\\boxed{')) {
+                            const content = bp.slice(7, -1);
+                            return (
+                                <span key={bpi} className="border border-black px-1 mx-1 inline-block">
+                                    {content}
+                                </span>
+                            )
+                        }
+                        return <span key={bpi}>{bp}</span>
+                    })}
+                </span>
+             )
+          }
+          return <span key={index}>{part}</span>;
+        })}
+      </span>
+    );
   };
 
-  const processBold = (text: string, startKey: number): React.ReactNode[] => {
-    const boldRegex = /\*\*(.*?)\*\*/g;
-    const parts: React.ReactNode[] = [];
-    let lastIndex = 0;
-    let match;
-    let keyIndex = startKey;
-
-    while ((match = boldRegex.exec(text)) !== null) {
-      if (match.index > lastIndex) {
-        parts.push(
-          <span key={`text-${keyIndex++}`}>
-            {text.substring(lastIndex, match.index)}
-          </span>
-        );
-      }
-
-      parts.push(<strong key={`bold-${keyIndex++}`}>{match[1]}</strong>);
-
-      lastIndex = match.index + match[0].length;
-    }
-
-    if (lastIndex < text.length) {
-      parts.push(
-        <span key={`text-${keyIndex++}`}>{text.substring(lastIndex)}</span>
-      );
-    }
-
-    return parts;
-  };
-
-  // Get previous rounds data - support both old and new format
   const getPreviousRoundsData = () => {
-    // New format: previous_rounds object
     if (questionData.previous_rounds && Object.keys(questionData.previous_rounds).length > 0) {
       return Object.entries(questionData.previous_rounds)
         .sort(([keyA], [keyB]) => {
-          const numA = parseInt(keyA.split('_')[1]);
-          const numB = parseInt(keyB.split('_')[1]);
+          const numA = parseInt(keyA.split('_')[1] || '0');
+          const numB = parseInt(keyB.split('_')[1] || '0');
           return numA - numB;
         });
     }
-    
-    // Old format: previous_responses array
-    if (questionData.previous_responses && questionData.previous_responses.length > 0) {
-      return null; // Will use old rendering
+    if (questionData.previous_responses && !Array.isArray(questionData.previous_responses) && typeof questionData.previous_responses === 'object') {
+        return [["Current Context", questionData.previous_responses as {[key: string]: string}]];
     }
-    
+
+    if (Array.isArray(questionData.previous_responses) && questionData.previous_responses.length > 0) {
+        const responses: {[key: string]: string} = {};
+        questionData.previous_responses.forEach((resp, idx) => {
+            responses[`Agent ${idx}`] = resp;
+        });
+        return [["Previous Responses", responses]];
+    }
+
     return [];
   };
 
   const previousRoundsData = getPreviousRoundsData();
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        backgroundColor: "rgba(0, 0, 0, 0.5)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-        padding: "1rem",
-      }}
-    >
-      <div
-        style={{
-          backgroundColor: "white",
-          borderRadius: "12px",
-          maxWidth: "900px",
-          width: "100%",
-          maxHeight: "90vh",
-          overflow: "auto",
-          boxShadow:
-            "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
-        }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            padding: "1.5rem",
-            borderBottom: "1px solid #e5e7eb",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-          }}
-        >
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200">
+        <div className="bg-slate-50 border-b border-slate-200 px-6 py-4 flex justify-between items-center flex-shrink-0">
           <div>
-            <h2
-              style={{
-                fontSize: "1.5rem",
-                fontWeight: "bold",
-                color: "white",
-                margin: 0,
-                display: "flex",
-                alignItems: "center",
-                gap: "0.5rem",
-              }}
-            >
-              <Clock size={24} />
-              Your Turn to Respond
+            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-indigo-500" />
+              Human Intervention Required
             </h2>
-            <p
-              style={{
-                fontSize: "0.875rem",
-                color: "rgba(255, 255, 255, 0.9)",
-                marginTop: "0.25rem",
-              }}
-            >
-              Round {(questionData.round_number ?? 0) + 1} - Agent{" "}
-              {questionData.agent_index ?? 0}
+            <p className="text-sm text-slate-500">
+              Round {(questionData.round_number ?? 0) + 1} • Agent {questionData.agent_index ?? 0} Turn
             </p>
           </div>
-          <button
-            onClick={onClose}
-            style={{
-              padding: "0.5rem",
-              borderRadius: "0.5rem",
-              border: "none",
-              backgroundColor: "rgba(255, 255, 255, 0.2)",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              color: "white",
-              transition: "background-color 0.2s",
-            }}
-            onMouseOver={(e) =>
-              (e.currentTarget.style.backgroundColor =
-                "rgba(255, 255, 255, 0.3)")
-            }
-            onMouseOut={(e) =>
-              (e.currentTarget.style.backgroundColor =
-                "rgba(255, 255, 255, 0.2)")
-            }
-          >
+          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full text-slate-500 transition-colors">
             <X size={20} />
           </button>
         </div>
 
-        {/* Content */}
-        <div style={{ padding: "1.5rem" }}>
-          {/* Question Display */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/30 scrollbar-thin scrollbar-thumb-slate-200">
           {questionData.question_text && (
-            <div
-              style={{
-                backgroundColor: "#fef3c7",
-                padding: "1rem",
-                borderRadius: "0.5rem",
-                marginBottom: "1.5rem",
-                border: "2px solid #fbbf24",
-              }}
-            >
-              <h3
-                style={{
-                  fontSize: "0.875rem",
-                  fontWeight: "600",
-                  color: "#92400e",
-                  marginBottom: "0.5rem",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.05em",
-                }}
-              >
-                Question:
-              </h3>
-              <div
-                style={{
-                  fontSize: "0.9375rem",
-                  color: "#1f2937",
-                  lineHeight: "1.6",
-                  fontWeight: "500",
-                }}
-              >
-                {(questionData.question_text || "")}
+            <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-5 shadow-sm">
+              <h3 className="text-xs font-bold text-indigo-600 uppercase tracking-wider mb-2">Original Question</h3>
+              <div className="text-slate-800 font-medium leading-relaxed whitespace-pre-wrap">
+                {questionData.question_text}
               </div>
             </div>
           )}
 
-          {/* NEW FORMAT: Previous Rounds with Card-based styling */}
-          {previousRoundsData && previousRoundsData.length > 0 && (
-            <div style={{ marginBottom: "1.5rem" }}>
-              <div style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "0.5rem",
-                marginBottom: "1rem"
-              }}>
-                <h3
-                  style={{
-                    fontSize: "1rem",
-                    fontWeight: "600",
-                    color: "#374151",
-                    margin: 0,
-                  }}
-                >
-                  Previous Round Responses
-                </h3>
-                <span style={{
-                  fontSize: "0.75rem",
-                  backgroundColor: "#dbeafe",
-                  color: "#1e40af",
-                  padding: "0.25rem 0.5rem",
-                  borderRadius: "9999px",
-                  fontWeight: "500",
-                }}>
-                  {previousRoundsData.length} round{previousRoundsData.length > 1 ? 's' : ''}
-                </span>
-              </div>
-
-              {questionData.replace_agent_name && (
-                <div style={{
-                  fontSize: "0.75rem",
-                  color: "#6b7280",
-                  marginBottom: "0.75rem",
-                  padding: "0.5rem",
-                  backgroundColor: "#f3f4f6",
-                  borderRadius: "0.375rem",
-                  borderLeft: "3px solid #3b82f6",
-                }}>
-                  💡 You're taking over from <strong>{questionData.replace_agent_name}</strong>. Review their previous arguments below.
+          {previousRoundsData.length === 0 ? (
+              (questionData.round_number ?? 0) > 0 && (
+                <div className="text-center text-slate-400 italic py-8 border-2 border-dashed border-slate-200 rounded-xl">
+                    Waiting for previous responses...
                 </div>
-              )}
+              )
+          ) : (
+              previousRoundsData.map(([roundKey, responses]) => {
+                const roundNum = typeof roundKey === "string" ? parseInt(roundKey.split('_')[1] || '0') : 0;
+                const headerText = isNaN(roundNum) ? roundKey : `Round ${roundNum + 1}`;
 
-              <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                {previousRoundsData.map(([roundKey, responses]) => {
-                  const roundNum = parseInt(roundKey.split('_')[1]);
-                  
-                  return (
-                    <div
-                      key={roundKey}
-                      style={{
-                        marginBottom: "1rem",
-                        border: "1px solid #e5e7eb",
-                        borderRadius: "0.5rem",
-                        overflow: "hidden",
-                        borderLeft: "4px solid #3b82f6",
-                      }}
-                    >
-                      <div style={{
-                        backgroundColor: "#f9fafb",
-                        padding: "0.75rem 1rem",
-                        borderBottom: "1px solid #e5e7eb",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                      }}>
-                        <h4 style={{
-                          fontSize: "0.875rem",
-                          fontWeight: "600",
-                          color: "#111827",
-                          margin: 0,
-                        }}>
-                          Round {roundNum}
-                        </h4>
-                        <span style={{
-                          fontSize: "0.75rem",
-                          color: "#6b7280",
-                        }}>
-                          {Object.keys(responses).length} agent{Object.keys(responses).length > 1 ? 's' : ''}
+                return (
+                <div key={String(roundKey)} className="relative">
+                    <div className="sticky top-0 flex justify-center mb-4 z-10">
+                        <span className="bg-slate-200 text-slate-600 text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-wider shadow-sm">
+                           {typeof headerText === "string" ? headerText : JSON.stringify(headerText)}
                         </span>
-                      </div>
-
-                      {/* CARD-BASED AGENT RESPONSES */}
-                      <div style={{ 
-                        padding: "1rem",
-                        backgroundColor: "#fafafa",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "1rem"
-                      }}>
-                        {Object.entries(responses).map(([agentName, response]) => {
-                          const isYourPrevious = isReplacedAgent(agentName);
-                          
-                          return (
-                            <div
-                              key={agentName}
-                              style={{
-                                padding: "1rem",
-                                backgroundColor: isYourPrevious ? "#eff6ff" : "#ffffff",
-                                border: isYourPrevious ? "2px solid #3b82f6" : "2px solid #e5e7eb",
-                                borderRadius: "0.5rem",
-                                boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1)",
-                              }}
-                            >
-                              <div style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "0.5rem",
-                                marginBottom: "0.75rem",
-                                paddingBottom: "0.5rem",
-                                borderBottom: isYourPrevious ? "2px solid #bfdbfe" : "2px solid #f3f4f6",
-                              }}>
-                                <Bot size={16} style={{ color: isYourPrevious ? "#2563eb" : "#6b7280" }} />
-                                <span style={{
-                                  fontSize: "0.875rem",
-                                  fontWeight: "600",
-                                  color: isYourPrevious ? "#1e40af" : "#374151",
-                                }}>
-                                  {formatAgentName(agentName)}
-                                </span>
-                                {isYourPrevious && (
-                                  <span style={{
-                                    fontSize: "0.6875rem",
-                                    backgroundColor: "#2563eb",
-                                    color: "white",
-                                    padding: "0.125rem 0.5rem",
-                                    borderRadius: "9999px",
-                                    fontWeight: "500",
-                                  }}>
-                                    Your previous response
-                                  </span>
-                                )}
-                              </div>
-                              <div style={{
-                                fontSize: "0.875rem",
-                                color: "#111827",
-                                lineHeight: "1.6",
-                                whiteSpace: "pre-wrap",
-                              }}>
-                                {renderLatex(response)}
-                              </div>
+                    </div>
+                    <div className="space-y-6">
+                    {Object.entries(responses).map(([agentName, response]) => {
+                        const responseStr = String(response);
+                        const isYou = isReplacedAgent(agentName);
+                        
+                        return (
+                        <div key={agentName} className={`flex gap-4 ${isYou ? 'flex-row-reverse' : ''}`}>
+                            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1 shadow-sm ${isYou ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}>
+                                {isYou ? <User size={16} /> : <Bot size={16} />}
                             </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
 
-          {/* OLD FORMAT: Fallback for previous_responses array (backwards compatibility) */}
-          {!previousRoundsData && questionData.previous_responses && questionData.previous_responses.length > 0 && (
-            <div style={{ marginBottom: "1.5rem" }}>
-              <h3
-                style={{
-                  fontSize: "0.875rem",
-                  fontWeight: "600",
-                  color: "#374151",
-                  marginBottom: "0.75rem",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.5rem",
-                }}
-              >
-                <Bot size={16} />
-                AI Agent Responses ({questionData.previous_responses.length}):
-              </h3>
-              <div
-                style={{
-                  maxHeight: "300px",
-                  overflowY: "auto",
-                  backgroundColor: "#fafafa",
-                  padding: "1rem",
-                  borderRadius: "0.5rem",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "1rem",
-                }}
-              >
-                {questionData.previous_responses.map((resp, idx) => (
-                  <div
-                    key={idx}
-                    style={{
-                      padding: "1rem",
-                      backgroundColor: "white",
-                      border: "2px solid #e5e7eb",
-                      borderRadius: "0.5rem",
-                      boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1)",
-                    }}
-                  >
-                    <div style={{
-                      fontSize: "0.875rem",
-                      color: "#111827",
-                      lineHeight: "1.6",
-                      whiteSpace: "pre-wrap",
-                    }}>
-                      {renderLatex(resp)}
+                            <div className={`flex flex-col max-w-[85%] ${isYou ? 'items-end' : 'items-start'}`}>
+                                <div className="flex items-center gap-2 mb-1 px-1">
+                                    <span className="text-xs font-bold text-slate-500">
+                                        {formatAgentName(agentName)}
+                                    </span>
+                                    {isYou && <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full font-semibold">You</span>}
+                                </div>
+                                
+                                <div className={`p-4 rounded-2xl shadow-sm text-sm leading-relaxed overflow-x-auto ${
+                                    isYou 
+                                    ? 'bg-indigo-600 text-white rounded-tr-none' 
+                                    : 'bg-white border border-slate-200 text-slate-700 rounded-tl-none'
+                                }`}>
+                                    {renderLatex(responseStr)}
+                                </div>
+                            </div>
+                        </div>
+                        );
+                    })}
                     </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+                </div>
+                );
+            })
           )}
+        </div>
 
-          {/* Response Input */}
-          <div style={{ marginBottom: "1rem" }}>
-            <label
-              style={{
-                display: "block",
-                fontSize: "0.875rem",
-                fontWeight: "600",
-                color: "#374151",
-                marginBottom: "0.5rem",
-              }}
-            >
-              Your Response <span style={{ color: "#dc2626" }}>*</span>
-            </label>
+        <div className="p-6 bg-white border-t border-slate-200 flex-shrink-0">
+          <label className="block text-sm font-semibold text-slate-700 mb-2">
+            Your Response
+          </label>
+          <div className="relative">
             <textarea
               value={responseText}
               onChange={(e) => setResponseText(e.target.value)}
-              placeholder="Enter your reasoning and response here. Consider the previous round responses above when crafting your answer."
-              rows={8}
-              style={{
-                width: "100%",
-                padding: "0.75rem",
-                border: "2px solid #d1d5db",
-                borderRadius: "0.5rem",
-                fontSize: "0.875rem",
-                resize: "vertical",
-                fontFamily: "inherit",
-                outline: "none",
-                transition: "border-color 0.2s",
-              }}
-              onFocus={(e) => (e.target.style.borderColor = "#667eea")}
-              onBlur={(e) => (e.target.style.borderColor = "#d1d5db")}
+              placeholder="Enter your argument here..."
+              className="w-full p-4 pr-16 rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 outline-none resize-none h-32 text-sm text-slate-800 shadow-inner"
             />
-          </div>
-
-          {/* Buttons */}
-          <div
-            style={{
-              display: "flex",
-              gap: "0.75rem",
-              justifyContent: "flex-end",
-              paddingTop: "0.5rem",
-              borderTop: "1px solid #e5e7eb",
-            }}
-          >
-            <button
-              onClick={onClose}
-              disabled={isSubmitting}
-              style={{
-                padding: "0.625rem 1.25rem",
-                borderRadius: "0.5rem",
-                border: "1px solid #d1d5db",
-                backgroundColor: "white",
-                color: "#374151",
-                fontSize: "0.875rem",
-                fontWeight: "500",
-                cursor: isSubmitting ? "not-allowed" : "pointer",
-                opacity: isSubmitting ? 0.5 : 1,
-                transition: "background-color 0.2s",
-              }}
-              onMouseOver={(e) =>
-                !isSubmitting &&
-                (e.currentTarget.style.backgroundColor = "#f9fafb")
-              }
-              onMouseOut={(e) =>
-                (e.currentTarget.style.backgroundColor = "white")
-              }
-            >
-              Cancel
-            </button>
             <button
               onClick={handleSubmit}
               disabled={isSubmitting || !responseText.trim()}
-              style={{
-                padding: "0.625rem 1.25rem",
-                borderRadius: "0.5rem",
-                border: "none",
-                background:
-                  isSubmitting || !responseText.trim()
-                    ? "#d1d5db"
-                    : "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-                color: "white",
-                fontSize: "0.875rem",
-                fontWeight: "600",
-                cursor:
-                  isSubmitting || !responseText.trim()
-                    ? "not-allowed"
-                    : "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: "0.5rem",
-                transition: "transform 0.2s, box-shadow 0.2s",
-              }}
-              onMouseOver={(e) => {
-                if (!isSubmitting && responseText.trim()) {
-                  e.currentTarget.style.transform = "translateY(-1px)";
-                  e.currentTarget.style.boxShadow =
-                    "0 4px 6px -1px rgba(0, 0, 0, 0.1)";
-                }
-              }}
-              onMouseOut={(e) => {
-                e.currentTarget.style.transform = "translateY(0)";
-                e.currentTarget.style.boxShadow = "none";
-              }}
+              className="absolute bottom-4 right-4 p-2 bg-indigo-600 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:bg-indigo-700 transition-all flex items-center justify-center w-10 h-10 shadow-md"
+              title="Submit Response"
             >
               {isSubmitting ? (
-                <>
-                  <div
-                    style={{
-                      width: "16px",
-                      height: "16px",
-                      border: "2px solid white",
-                      borderTopColor: "transparent",
-                      borderRadius: "50%",
-                      animation: "spin 1s linear infinite",
-                    }}
-                  />
-                  Submitting...
-                </>
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
               ) : (
-                <>
-                  <Send size={16} />
-                  Submit Response
-                </>
+                <Send size={18} />
               )}
             </button>
           </div>
         </div>
-      </div>
 
-      <style>{`
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
+      </div>
     </div>
   );
 };

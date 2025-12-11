@@ -1,25 +1,13 @@
--- init_tables.sql - Backend API Schema for Debate System
-
--- ============================================================================
--- DEBATES (Top-level batch runs with specific debate types)
--- ============================================================================
-
 CREATE TABLE IF NOT EXISTS debates (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
     debate_type VARCHAR(100) NOT NULL,
     config JSONB NOT NULL,
-    
-    -- Execution
     status VARCHAR(50) NOT NULL DEFAULT 'queued',
-    
-    -- Progress
     total_questions INT NOT NULL,
     completed_questions INT DEFAULT 0,
     performance_data JSONB DEFAULT '{}',
     wandb_metadata JSONB DEFAULT '{}',
-    
-    -- Timing
     created_at TIMESTAMP DEFAULT NOW(),
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -34,10 +22,6 @@ CREATE INDEX IF NOT EXISTS idx_debates_celery_task_id ON debates(celery_task_id)
 CREATE INDEX IF NOT EXISTS idx_debates_performance_data ON debates USING GIN (performance_data);
 CREATE INDEX IF NOT EXISTS idx_debates_wandb_metadata ON debates USING GIN (wandb_metadata);
 
--- ============================================================================
--- QUESTIONS (Question bank - reusable across debates)
--- ============================================================================
-
 CREATE TABLE IF NOT EXISTS questions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     question_id INT NOT NULL,
@@ -50,22 +34,12 @@ CREATE TABLE IF NOT EXISTS questions (
 CREATE INDEX IF NOT EXISTS idx_questions_question_id ON questions(question_id);
 CREATE INDEX IF NOT EXISTS idx_questions_question_text ON questions(question_text);
 
--- ============================================================================
--- QUESTION_SESSIONS (One question being solved in a debate)
--- ============================================================================
-
 CREATE TABLE IF NOT EXISTS question_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     debate_id UUID NOT NULL REFERENCES debates(id) ON DELETE CASCADE,
     question_id UUID NOT NULL REFERENCES questions(id) ON DELETE RESTRICT,
-    
-    -- Execution
     status VARCHAR(50) NOT NULL DEFAULT 'queued',
-    
-    -- State
     total_rounds INT NOT NULL,
-    
-    -- Timing
     created_at TIMESTAMP DEFAULT NOW(),
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -79,10 +53,6 @@ CREATE INDEX IF NOT EXISTS idx_question_sessions_debate_id ON question_sessions(
 CREATE INDEX IF NOT EXISTS idx_question_sessions_status ON question_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_question_sessions_celery_task_id ON question_sessions(celery_task_id) WHERE celery_task_id IS NOT NULL;
 
--- ============================================================================
--- ROUNDS (Container for one round of debate)
--- ============================================================================
-
 CREATE TABLE IF NOT EXISTS rounds (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     question_session_id UUID NOT NULL REFERENCES question_sessions(id) ON DELETE CASCADE,
@@ -95,26 +65,16 @@ CREATE TABLE IF NOT EXISTS rounds (
 
 CREATE INDEX IF NOT EXISTS idx_rounds_question_session_id ON rounds(question_session_id);
 
--- ============================================================================
--- AGENT_RESPONSES (Individual agent responses within a round)
--- ============================================================================
-
 CREATE TABLE IF NOT EXISTS agent_responses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     round_id UUID NOT NULL REFERENCES rounds(id) ON DELETE CASCADE,
-    
-    -- Agent identification
     agent_index INT NOT NULL,
     model_name VARCHAR(255),
-    
-    -- Response content
     response_text TEXT NOT NULL,
     extracted_answer TEXT,
     is_correct BOOLEAN,
     is_human BOOLEAN NOT NULL DEFAULT FALSE,
-    
     created_at TIMESTAMP DEFAULT NOW(),
-    
     UNIQUE(round_id, agent_index)
 );
 

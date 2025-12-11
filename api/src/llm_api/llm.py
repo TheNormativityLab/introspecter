@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import os
 from typing import Callable, Literal, Optional, Union, List
 from omegaconf import DictConfig, OmegaConf
 
@@ -11,9 +10,17 @@ from litellm import Router, APIError
 
 from src.llm_api.base_llm_abstractions import LLMResponse, Message, LLMConfig
 
+import os
+os.environ["LITELLM_TELEMETRY"] = "False"
+os.environ["LITELLM_LOGGING"] = "False"
+
 # TODO: get logger from hydra
 # from pr_agent.log import get_logger
 # TMP only
+litellm.telemetry = False
+litellm.success_callback = []
+litellm.failure_callback = []
+litellm.callbacks = []
 logger = logging.getLogger(__name__)
 
 

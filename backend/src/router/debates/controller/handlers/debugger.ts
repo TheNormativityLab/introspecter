@@ -1,562 +1,193 @@
-// backend/src/controllers/debate/debateController.ts (ADD THESE FUNCTIONS)
-
 import { Request, Response } from "express";
-import axios, { AxiosResponse } from "axios";
+import axios from "axios";
 import { logger } from "../../../../services/logger";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
-const FASTAPI_BASE_URL =
-  process.env.FASTAPI_BASE_URL || "http://introspecter-api:3001";
+const api = axios.create({
+  baseURL: process.env.FASTAPI_BASE_URL || "http://introspecter-api:3001",
+  timeout: 30000,
+  headers: { "Content-Type": "application/json", Accept: "application/json" },
+  validateStatus: (s) => s < 600,
+});
 
-export const replayDebate = async (
-  req: Request,
-  res: Response
-): Promise<Response> => {
+const handleError = (res: Response, error: any, context: string) => {
+  logger.error(`${context} error:`, error.message);
+  if (error.response) {
+    return res.status(error.response.status).json({
+      success: false,
+      message: error.response.data?.detail || "Backend error",
+      error: error.response.data,
+    });
+  }
+  if (error.request) {
+    return res.status(503).json({ success: false, message: "Backend unavailable" });
+  }
+  return res.status(500).json({ success: false, message: "Internal server error", error: error.message });
+};
+
+export const replayDebate = async (req: Request, res: Response): Promise<Response> => {
   try {
     const replayData = req.body;
-
-    logger.info("Replay request:", {replayData});
-    const requiredFields = [
-      "question_index",
-      "start_from_round",
-      "replace_agent_name",
-      "question_data",
-      "previous_rounds",
-      "original_config",
-    ];
-
-    for (const field of requiredFields) {
-      if (!(field in replayData)) {
-        logger.error(`Missing required field: ${field}`);
-        return res.status(400).json({
-          success: false,
-          message: `Missing required field: ${field}`,
-        });
-      }
+    const required = ["question_index", "start_from_round", "replace_agent_name", "question_data", "previous_rounds", "original_config"];
+    
+    if (!required.every(f => f in replayData)) {
+      return res.status(400).json({ success: false, message: "Missing required fields" });
     }
-
     if (replayData.start_from_round < 0) {
-      return res.status(400).json({
-        success: false,
-        message: "start_from_round must be >= 0",
-      });
+      return res.status(400).json({ success: false, message: "start_from_round must be >= 0" });
     }
 
-    try {
-      await axios.get(`${FASTAPI_BASE_URL}/health`, { timeout: 5000 });
-    } catch (healthError) {
-      logger.error("FastAPI health check failed:", healthError);
-      return res.status(503).json({
-        success: false,
-        message: "FastAPI backend is not available",
-        error: "Service unavailable",
-      });
-    }
+    const response = await api.post("/debates/replay", replayData);
+    if (response.status >= 400) return res.status(response.status).json(response.data);
 
-    const response = await axios.post(
-      `${FASTAPI_BASE_URL}/debates/replay`,
-      replayData,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
+    const result = response.data;
+    
+    prisma.debate.create({
+      data: {
+        experimentId: result.debate_id,
+        seed: replayData.original_config.seed || 0,
+        datasetName: replayData.original_config.dataset_name || "replay",
+        status: result.status,
+        createdAt: new Date(result.created_at),
+        processedAt: new Date(),
+        wandbMetadata: {
+          is_replay: true,
+          question_index: replayData.question_index,
+          start_from_round: replayData.start_from_round,
+          replace_agent_name: replayData.replace_agent_name,
         },
-        timeout: 30000,
-        validateStatus: (status) => status < 600,
-      }
-    );
-
-    if (response.status >= 400) {
-      logger.error(`FastAPI replay error: ${response.status}`, {
-        data: response.data,
-      });
-
-      return res.status(response.status).json({
-        success: false,
-        message:
-          response.data?.detail ||
-          response.data?.message ||
-          "Failed to create replay",
-        error: response.data,
-      });
-    }
-
-    const replayResult = response.data;
-
-    logger.info("Replay created successfully:", {
-      debate_id: replayResult.debate_id,
-      websocket_url: replayResult.websocket_url,
-    });
-
-    try {
-      const debate = await prisma.debate.create({
-        data: {
-          experimentId: replayResult.debate_id,
-          seed: replayData.original_config.seed || 0,
-          datasetName: replayData.original_config.dataset_name || "replay",
-          status: replayResult.status,
-          createdAt: new Date(replayResult.created_at),
-          processedAt: new Date(),
-          wandbMetadata: {
-            is_replay: true,
-            question_index: replayData.question_index,
-            start_from_round: replayData.start_from_round,
-            replace_agent_name: replayData.replace_agent_name,
-          },
-        },
-      });
-
-      logger.info(`Synced replay to database with ID: ${debate.id}`);
-    } catch (dbError) {
-      logger.error("Failed to sync replay to database:", dbError);
-    }
+      },
+    }).catch(e => logger.error("Replay DB sync failed", e));
 
     return res.status(201).json({
       success: true,
-      message: "Replay created successfully",
-      debate_id: replayResult.debate_id,
-      websocket_url: replayResult.websocket_url,
-      status: replayResult.status,
-      celery_task_id: replayResult.celery_task_id,
-      human_agent_index: replayResult.human_agent_index,
+      message: "Replay created",
+      debate_id: result.debate_id,
+      websocket_url: result.websocket_url,
+      status: result.status,
+      celery_task_id: result.celery_task_id,
+      human_agent_index: result.human_agent_index,
     });
   } catch (error: any) {
-    logger.error("Error creating replay:", error);
-
-    if (error.response) {
-      return res.status(error.response.status).json({
-        success: false,
-        message:
-          error.response.data?.detail ||
-          error.response.data?.message ||
-          "FastAPI error",
-        error: error.response.data,
-      });
-    }
-
-    if (error.request) {
-      return res.status(503).json({
-        success: false,
-        message: "Failed to connect to FastAPI backend",
-        error: error.message,
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
+    return handleError(res, error, "Replay Debate");
   }
 };
 
-export const getQuestionDetails = async (
-  req: Request,
-  res: Response
-): Promise<Response> => {
+export const getQuestionDetails = async (req: Request, res: Response): Promise<Response> => {
   try {
     const { debateId, questionIndex } = req.params;
+    if (!debateId || !questionIndex) return res.status(400).json({ success: false, message: "Missing params" });
 
-    logger.info(
-      `Getting question details: debate=${debateId}, question=${questionIndex}`
-    );
+    const response = await api.get(`/debates/${debateId}/question/${questionIndex}`, { timeout: 15000 });
+    
+    if (response.status === 404) return res.status(404).json({ success: false, message: "Not found" });
+    if (response.status >= 400) return res.status(response.status).json(response.data);
 
-    if (!debateId || !questionIndex) {
-      return res.status(400).json({
-        success: false,
-        message: "debateId and questionIndex are required",
-      });
-    }
-
-    const questionIdx = parseInt(questionIndex, 10);
-    if (isNaN(questionIdx) || questionIdx < 0) {
-      return res.status(400).json({
-        success: false,
-        message: "questionIndex must be a valid non-negative number",
-      });
-    }
-
-    try {
-      await axios.get(`${FASTAPI_BASE_URL}/health`, { timeout: 5000 });
-    } catch (healthError) {
-      logger.error("FastAPI health check failed:", healthError);
-      return res.status(503).json({
-        success: false,
-        message: "FastAPI backend is not available",
-      });
-    }
-
-    const response = await axios.get(
-      `${FASTAPI_BASE_URL}/debates/${debateId}/question/${questionIdx}`,
-      {
-        headers: {
-          Accept: "application/json",
-        },
-        timeout: 15000,
-        validateStatus: (status) => status < 600,
-      }
-    );
-
-    if (response.status === 404) {
-      return res.status(404).json({
-        success: false,
-        message: "Question not found or debate not found",
-      });
-    }
-
-    if (response.status >= 400) {
-      logger.error(`FastAPI error: ${response.status}`, response.data);
-      return res.status(response.status).json({
-        success: false,
-        message: "Failed to fetch question details",
-        error: response.data,
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      data: response.data,
-    });
+    return res.status(200).json({ success: true, data: response.data });
   } catch (error: any) {
-    logger.error("Error getting question details:", error);
-
-    if (error.response) {
-      return res.status(error.response.status).json({
-        success: false,
-        message: error.response.data?.detail || "FastAPI error",
-        error: error.response.data,
-      });
-    }
-
-    if (error.request) {
-      return res.status(503).json({
-        success: false,
-        message: "Failed to connect to FastAPI backend",
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
+    return handleError(res, error, "Get Question");
   }
 };
 
-export const getStatus = async (
-  req: Request,
-  res: Response
-): Promise<Response> => {
+export const getStatus = async (req: Request, res: Response): Promise<Response> => {
+  const { debateId } = req.params;
   try {
-    const { debateId } = req.params;
+    const response = await api.get(`/debates/${debateId}/status`, { timeout: 10000 });
 
-    logger.info(`Getting status for debate: ${debateId}`);
-
-    try {
-      const statusUrl = `${FASTAPI_BASE_URL}/debates/${debateId}/status`;
-      logger.info(`Requesting status from: ${statusUrl}`);
-
-      const response = await axios.get(statusUrl, {
-        timeout: 10000,
-        headers: {
-          Accept: "application/json",
-        },
-        validateStatus: (status) => status < 600,
-      });
-
-      if (response.status === 404) {
-        return res.status(404).json({
-          success: false,
-          message: "Debate not found",
+    if (response.status === 404) return res.status(404).json({ success: false, message: "Debate not found" });
+    if (response.status < 300) {
+      return res.status(200).json({
+        success: true,
+        data: {
           debate_id: debateId,
-        });
-      }
-
-      if (response.status >= 200 && response.status < 300) {
-        const debateData = response.data;
-
-        return res.status(200).json({
-          success: true,
-          data: {
-            debate_id: debateId,
-            status: debateData.status || "unknown",
-            celery_task_id: debateData.celery_task_id,
-            task_status: debateData.task_status,
-            current_question: debateData.current_question_index || 0,
-            total_questions: debateData.total_questions || 0,
-            created_at: debateData.created_at,
-            debug_info: {
-              has_websocket: !!debateData.websocket_url,
-              has_task_id: !!debateData.celery_task_id,
-              task_state: debateData.task_status?.state || "UNKNOWN",
-              fastapi_reachable: true,
-            },
-          },
-        });
-      }
-
-      logger.warn(
-        `FastAPI returned error status ${response.status} for debate ${debateId}`
-      );
-
-    } catch (axiosError: any) {
-      logger.error(`Error fetching status from FastAPI for ${debateId}:`, {
-        message: axiosError.message,
-        code: axiosError.code,
-        response_status: axiosError.response?.status,
-      });
-    }
-
-    try {
-      const dbDebate = await prisma.debate.findFirst({
-        where: { experimentId: debateId },
-        select: {
-          id: true,
-          status: true,
-          createdAt: true,
-          processedAt: true,
+          status: response.data.status || "unknown",
+          celery_task_id: response.data.celery_task_id,
+          task_status: response.data.task_status,
+          current_question: response.data.current_question_index || 0,
+          total_questions: response.data.total_questions || 0,
+          created_at: response.data.created_at,
+          debug_info: { fastapi_reachable: true },
         },
       });
-
-      if (dbDebate) {
-        logger.info(`Found debate in database with status: ${dbDebate.status}`);
-
-        return res.status(200).json({
-          success: true,
-          data: {
-            debate_id: debateId,
-            status: dbDebate.status || "queued",
-            current_question: 0,
-            total_questions: 0,
-            created_at: dbDebate.createdAt.toISOString(),
-            debug_info: {
-              source: "database",
-              fastapi_unavailable: true,
-              db_status: dbDebate.status,
-            },
-          },
-        });
-      }
-    } catch (dbError) {
-      logger.error(`Database error checking debate ${debateId}:`, dbError);
     }
-
-    return res.status(200).json({
-      success: true,
-      data: {
-        debate_id: debateId,
-        status: "queued",
-        current_question: 0,
-        total_questions: 0,
-        created_at: new Date().toISOString(),
-        debug_info: {
-          source: "fallback",
-          fastapi_unavailable: true,
-          database_unavailable: true,
-        },
-      },
-    });
-  } catch (error: any) {
-    logger.error(
-      `Unexpected error getting debate status for ${req.params.debateId}:`,
-      error
-    );
-
-    return res.status(200).json({
-      success: true,
-      data: {
-        debate_id: req.params.debateId,
-        status: "unknown",
-        current_question: 0,
-        total_questions: 0,
-        created_at: new Date().toISOString(),
-        debug_info: {
-          error: error.message,
-          error_type: error.constructor.name,
-        },
-      },
-    });
+  } catch (e) {
+    logger.warn(`FastAPI status check failed for ${debateId}, falling back to DB`);
   }
-};
 
-export const cancelDebate = async (
-  req: Request,
-  res: Response
-): Promise<Response> => {
   try {
-    const { debateId } = req.params;
+    const dbDebate = await prisma.debate.findFirst({
+      where: { experimentId: debateId },
+      select: { status: true, createdAt: true },
+    });
 
-    logger.info(`Cancelling debate: ${debateId}`);
-    const response = await axios.post(
-      `${FASTAPI_BASE_URL}/debates/${debateId}/cancel`,
-      {},
-      {
-        headers: {
-          "Content-Type": "application/json",
+    if (dbDebate) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          debate_id: debateId,
+          status: dbDebate.status || "queued",
+          current_question: 0,
+          total_questions: 0,
+          created_at: dbDebate.createdAt.toISOString(),
+          debug_info: { source: "database", fastapi_unavailable: true },
         },
-        timeout: 10000,
-        validateStatus: (status) => status < 600,
-      }
-    );
-
-    if (response.status >= 400) {
-      logger.warn(`Failed to cancel debate ${debateId}`, {
-        status: response.status,
-        data: response.data,
-      });
-
-      return res.status(response.status).json({
-        success: false,
-        message: "Failed to cancel debate",
-        error: response.data,
       });
     }
-
-    logger.info(`Successfully cancelled debate ${debateId}`);
-
-    return res.status(200).json({
-      success: true,
-      message: "Debate cancelled successfully",
-      data: response.data,
-    });
-  } catch (error: any) {
-    logger.error(`Error cancelling debate ${req.params.debateId}:`, error);
-    return res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
+  } catch (dbError) {
+    logger.error("DB fallback failed", dbError);
   }
+
+  return res.status(200).json({
+    success: true,
+    data: {
+      debate_id: debateId,
+      status: "queued",
+      created_at: new Date().toISOString(),
+      debug_info: { source: "fallback", system_unavailable: true },
+    },
+  });
 };
 
-export const getHumanReady = async (
-  req: Request,
-  res: Response
-): Promise<Response> => {
+export const cancelDebate = async (req: Request, res: Response): Promise<Response> => {
   try {
-    const { debateId } = req.params;
-    const response = await fetch(`${FASTAPI_BASE_URL}/debates/${debateId}/human-ready`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || "Failed to signal human ready");
-    }
-
-    const data = await response.json();
-    return data;
-  } catch (err: any) {
-    console.error("Error signaling human ready:", err);
-    return { success: false, message: err.message };
+    const response = await api.post(`/debates/${req.params.debateId}/cancel`, {}, { timeout: 10000 });
+    if (response.status >= 400) return res.status(response.status).json({ success: false, error: response.data });
+    return res.status(200).json({ success: true, message: "Cancelled", data: response.data });
+  } catch (error: any) {
+    return handleError(res, error, "Cancel Debate");
   }
 };
 
+export const getHumanReady = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    const response = await api.post(`/debates/${req.params.debateId}/human-ready`);
+    if (response.status >= 400) throw new Error(response.data.detail || "Failed to signal ready");
+    return res.status(200).json(response.data);
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
 
-export const getHumanResponse = async (
-  req: Request,
-  res: Response
-): Promise<Response> => {
+export const getHumanResponse = async (req: Request, res: Response): Promise<Response> => {
   try {
     const { debateId } = req.params;
     const { response_text, extracted_answer } = req.body;
 
-    logger.info(`Received human response for debate ${debateId}`);
-    logger.info(`Response text: ${response_text?.slice(0, 100)}...`);
-    logger.info(`Extracted answer: ${extracted_answer}`);
+    if (!debateId || !response_text) return res.status(400).json({ success: false, message: "Missing fields" });
 
-    if (!debateId) {
-      return res.status(400).json({
-        success: false,
-        message: "debateId is required",
-      });
-    }
-
-    if (!response_text) {
-      return res.status(400).json({
-        success: false,
-        message: "response_text is required",
-      });
-    }
-
-    try {
-      await axios.get(`${FASTAPI_BASE_URL}/health`, { timeout: 5000 });
-    } catch (healthError) {
-      logger.error("FastAPI health check failed:", healthError);
-      return res.status(503).json({
-        success: false,
-        message: "FastAPI backend is not available",
-      });
-    }
-
-    const response = await axios.post(
-      `${FASTAPI_BASE_URL}/debate/${debateId}/human-response`,
-      {
-        response_text,
-        extracted_answer,
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        timeout: 15000,
-        validateStatus: (status) => status < 600,
-      }
+    const response = await api.post(
+      `/debate/${debateId}/human-response`,
+      { response_text, extracted_answer },
+      { timeout: 15000 }
     );
+
     if (response.status >= 400) {
-      logger.warn(
-        `FastAPI error submitting human response: ${response.status}`,
-        {
-          data: response.data,
-        }
-      );
-
-      return res.status(response.status).json({
-        success: false,
-        message:
-          response.data?.detail ||
-          response.data?.message ||
-          "Failed to submit human response",
-        error: response.data,
-      });
+      return res.status(response.status).json({ success: false, message: "Submission failed", error: response.data });
     }
 
-    logger.info(`Human response submitted successfully for debate ${debateId}`);
-    return res.status(200).json({
-      success: true,
-      message: "Human response submitted successfully",
-      debate_id: debateId,
-    });
+    return res.status(200).json({ success: true, message: "Submitted", debate_id: debateId });
   } catch (error: any) {
-    logger.error("Error submitting human response:", error);
-
-    if (error.response) {
-      return res.status(error.response.status).json({
-        success: false,
-        message:
-          error.response.data?.detail ||
-          error.response.data?.message ||
-          "FastAPI error",
-        error: error.response.data,
-      });
-    }
-
-    if (error.request) {
-      return res.status(503).json({
-        success: false,
-        message: "Failed to connect to FastAPI backend",
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error.message,
-    });
+    return handleError(res, error, "Human Response");
   }
 };

@@ -4,24 +4,22 @@ import React, { useEffect, useState, useMemo } from "react";
 import { transformExperiment } from "@/utils/helper";
 import { Button } from "@/components/button/Button";
 import {
-  User,
-  LogOut,
-  Plus,
+  FileText,
   Clock,
   CheckCircle,
-  Calendar,
   Filter,
   Search,
   X,
-  ChevronDown,
   Users,
   MessageSquare,
   Activity,
-  Brain,
-  TrendingUp,
-  Shuffle,
+  LayoutGrid,
+  Database,
+  Bot,
+  Bug,
+  ArrowRight,
+  Gavel
 } from "lucide-react";
-import { logger } from "@/utils/logger";
 
 interface Experiment {
   id: string;
@@ -59,27 +57,19 @@ const Dashboard = () => {
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showFilters, setShowFilters] = useState(false);
+  
+  const availableAgents = ["llama-3.1-8b-chat", "mistral-7b", "gpt-4o-mini", "gpt_3.5_turbo", "human-participant"];
+  const availableDatasets = ["gsm8k", "mmlu", "commonsense_qa", "custom"];
 
-  const availableAgents = [
-    "llama-3.1-8b-chat",
-    "mistral-7b",
-    "gpt-4o-mini",
-    "gpt_3.5_turbo",
-    "human-participant",
-  ];
-
-  const getInitialFilters = (): FilterState => {
-    return {
-      searchTerm: "",
-      status: "all",
-      selectedAgents: [],
-      selectedDatasets: [],
-      participationTypes: [],
-      numRounds: 0,
-      numAgents: 0,
-    };
-  };
+  const getInitialFilters = (): FilterState => ({
+    searchTerm: "",
+    status: "all",
+    selectedAgents: [],
+    selectedDatasets: [],
+    participationTypes: [],
+    numRounds: 0,
+    numAgents: 0,
+  });
 
   const [filters, setFilters] = useState<FilterState>(getInitialFilters);
 
@@ -91,664 +81,339 @@ const Dashboard = () => {
     try {
       setLoading(true);
       const response = await fetch(`/api/all-debates`);
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
-      console.log("API Response:", data);
-
+      
       if (data.experiment_groups && Array.isArray(data.experiment_groups)) {
-        const transformedExperiments =
-          data.experiment_groups.map(transformExperiment);
-        console.log("Transformed experiments:", transformedExperiments);
+        const transformedExperiments = data.experiment_groups.map(transformExperiment);
         setExperiments(transformedExperiments);
       } else {
-        console.warn("No experiments found in API response");
         setExperiments([]);
       }
     } catch (err) {
       setError("Failed to load experiments");
-      console.error("Fetch error:", err);
       setExperiments([]);
     } finally {
       setLoading(false);
     }
   };
 
-  // Helper function to get actual number of rounds from experiment data
   const getActualNumRounds = (experiment: Experiment): number => {
-    // rawData contains runs array (one per seed)
     if (experiment.rawData?.runs && Array.isArray(experiment.rawData.runs)) {
       const firstRun = experiment.rawData.runs[0];
-      
-      // Try to get from result_data first (most reliable)
-      if (firstRun?.result_data?.[0]?.debate_session?.rounds) {
-        return firstRun.result_data[0].debate_session.rounds.length;
-      }
-      
-      // Fallback to parsed_args with checkpoint logic
+      if (firstRun?.result_data?.[0]?.debate_session?.rounds) return firstRun.result_data[0].debate_session.rounds.length;
       const parsedArgs = firstRun?.wandb_metadata?.parsed_args || {};
-      const hasCheckpoint = parsedArgs["checkpoint.frequency"];
-      const configuredRounds = parsedArgs["experiment.num_rounds"] || 0;
-      
-      return hasCheckpoint ? configuredRounds + 1 : configuredRounds;
+      return parsedArgs["checkpoint.frequency"] ? (parsedArgs["experiment.num_rounds"] || 0) + 1 : (parsedArgs["experiment.num_rounds"] || 0);
     }
-    
-    // If rawData is a single run object (legacy format)
-    if (experiment.rawData?.result_data?.[0]?.debate_session?.rounds) {
-      return experiment.rawData.result_data[0].debate_session.rounds.length;
-    }
-    
-    // Final fallback
+    if (experiment.rawData?.result_data?.[0]?.debate_session?.rounds) return experiment.rawData.result_data[0].debate_session.rounds.length;
     const parsedArgs = experiment.rawData?.wandb_metadata?.parsed_args || {};
-    const hasCheckpoint = parsedArgs["checkpoint.frequency"];
-    const configuredRounds = parsedArgs["experiment.num_rounds"] || 0;
-    
-    return hasCheckpoint ? configuredRounds + 1 : configuredRounds;
+    return parsedArgs["checkpoint.frequency"] ? (parsedArgs["experiment.num_rounds"] || 0) + 1 : (parsedArgs["experiment.num_rounds"] || 0);
   };
 
-  // Helper function to get actual number of agents
   const getActualNumAgents = (experiment: Experiment): number => {
-    // rawData contains runs array (one per seed)
     if (experiment.rawData?.runs && Array.isArray(experiment.rawData.runs)) {
       const firstRun = experiment.rawData.runs[0];
-      
-      // Try to get from result_data first (most reliable)
-      if (firstRun?.result_data?.[0]?.debate_session?.rounds?.[0]?.responses) {
-        const responses = firstRun.result_data[0].debate_session.rounds[0].responses;
-        return Object.keys(responses).length;
-      }
+      if (firstRun?.result_data?.[0]?.debate_session?.rounds?.[0]?.responses) return Object.keys(firstRun.result_data[0].debate_session.rounds[0].responses).length;
     }
-    
-    // If rawData is a single run object (legacy format)
-    if (experiment.rawData?.result_data?.[0]?.debate_session?.rounds?.[0]?.responses) {
-      const responses = experiment.rawData.result_data[0].debate_session.rounds[0].responses;
-      return Object.keys(responses).length;
-    }
-    
-    // Fallback to agents array length
+    if (experiment.rawData?.result_data?.[0]?.debate_session?.rounds?.[0]?.responses) return Object.keys(experiment.rawData.result_data[0].debate_session.rounds[0].responses).length;
     return experiment.agents?.length || 0;
   };
 
-  const handleSeedChange = (experimentId: string, newSeed: string) => {
-    setExperiments((prev) =>
-      prev.map((exp) =>
-        exp.id === experimentId ? { ...exp, selectedSeed: newSeed } : exp
-      )
-    );
-  };
-
-  const handleAgentToggle = (agent: string) => {
-    setFilters((prev) => ({
-      ...prev,
-      selectedAgents: prev.selectedAgents.includes(agent)
-        ? prev.selectedAgents.filter((a) => a !== agent)
-        : [...prev.selectedAgents, agent],
-    }));
-  };
-
-  const handleDatasetToggle = (dataset: string) => {
-    setFilters((prev) => ({
-      ...prev,
-      selectedDatasets: prev.selectedDatasets.includes(dataset)
-        ? prev.selectedDatasets.filter((d) => d !== dataset)
-        : [...prev.selectedDatasets, dataset],
-    }));
-  };
-
-  const handleParticipationToggle = (type: string) => {
-    setFilters((prev) => ({
-      ...prev,
-      participationTypes: prev.participationTypes.includes(type)
-        ? prev.participationTypes.filter((t) => t !== type)
-        : [...prev.participationTypes, type],
-    }));
-  };
-  
-  // Update the availableDatasets array to match actual database values
-  const availableDatasets = [
-    "gsm8k",
-    "mmlu",
-    "commonsense_qa",
-    "custom", // Changed from "custom_questions"
-  ];
-
-  // Update the dataset display in the UI to show friendly names
   const getDatasetDisplayName = (dataset: string) => {
-    const displayNames: Record<string, string> = {
-      custom: "Custom Questions",
-      gsm8k: "GSM8K",
-      mmlu: "MMLU",
-      commonsense_qa: "CommonsenseQA",
-    };
+    const displayNames: Record<string, string> = { custom: "Custom Questions", gsm8k: "GSM8K", mmlu: "MMLU", commonsense_qa: "CommonsenseQA" };
     return displayNames[dataset.toLowerCase()] || dataset;
   };
 
-  // Fix the dataset filter to be more robust
+  const handleSeedChange = (experimentId: string, newSeed: string) => {
+    setExperiments((prev) => prev.map((exp) => exp.id === experimentId ? { ...exp, selectedSeed: newSeed } : exp));
+  };
+
+  const toggleFilter = (category: keyof FilterState, value: string) => {
+    setFilters(prev => {
+        const current = prev[category] as string[];
+        const updated = current.includes(value) ? current.filter(i => i !== value) : [...current, value];
+        return { ...prev, [category]: updated };
+    });
+  };
+
   const filteredExperiments = useMemo(() => {
     return experiments.filter((exp) => {
-      // Search term filter
       if (filters.searchTerm) {
-        const searchTerm = filters.searchTerm.toLowerCase();
-        const matchesSearch =
-          (typeof exp.name === "string" &&
-            exp.name.toLowerCase().includes(searchTerm)) ||
-          (exp.datasets ?? []).some(
-            (dataset) =>
-              typeof dataset === "string" &&
-              (dataset.toLowerCase().includes(searchTerm) ||
-                getDatasetDisplayName(dataset)
-                  .toLowerCase()
-                  .includes(searchTerm))
-          ) ||
-          (exp.agents ?? []).some(
-            (agent) =>
-              typeof agent === "string" &&
-              agent.toLowerCase().includes(searchTerm)
-          );
-        if (!matchesSearch) return false;
+        const term = filters.searchTerm.toLowerCase();
+        const matches = exp.name.toLowerCase().includes(term) || 
+                        exp.datasets.some(d => d.toLowerCase().includes(term)) || 
+                        exp.agents.some(a => a.toLowerCase().includes(term));
+        if (!matches) return false;
       }
-
-      // Status filter
-      if (filters.status !== "all" && exp.status !== filters.status) {
-        return false;
-      }
-
-      // Dataset filter - normalize both sides for comparison
+      if (filters.status !== "all" && exp.status !== filters.status) return false;
+      
       if (filters.selectedDatasets.length > 0) {
-        const hasDataset = exp.datasets?.some((dataset) => {
-          const normalizedDataset = dataset.toLowerCase().trim();
-          return filters.selectedDatasets.some((selected) => {
-            const normalizedSelected = selected.toLowerCase().trim();
-            // Match "custom" with "custom_questions" and vice versa
-            if (
-              (normalizedDataset === "custom" &&
-                normalizedSelected === "custom_questions") ||
-              (normalizedDataset === "custom_questions" &&
-                normalizedSelected === "custom")
-            ) {
-              return true;
-            }
-            return normalizedDataset === normalizedSelected;
-          });
-        });
+        const hasDataset = exp.datasets?.some(d => filters.selectedDatasets.some(sd => d.toLowerCase().includes(sd.toLowerCase().replace('custom_questions','custom'))));
         if (!hasDataset) return false;
       }
 
-      // Agent filter - improved to handle exact matches and underscores
       if (filters.selectedAgents.length > 0) {
-        const expAgentList = [...exp.agents];
-        if (exp.hasHuman) expAgentList.push("human");
-
-        const normalizeAgentName = (name: string) =>
-          name.toLowerCase().replace(/[-_]/g, "");
-
-        const hasMatch = filters.selectedAgents.some((selectedAgent) => {
-          const normalizedSelected = normalizeAgentName(selectedAgent);
-
-          return expAgentList.some((agent) => {
-            const normalizedAgent = normalizeAgentName(agent);
-            // Exact match after normalization
-            if (normalizedAgent === normalizedSelected) return true;
-            // Partial match for backwards compatibility
-            return normalizedAgent.includes(normalizedSelected);
-          });
-        });
-
+        const expAgents = [...exp.agents, exp.hasHuman ? "human" : ""].map(a => a.toLowerCase().replace(/[-_]/g, ""));
+        const hasMatch = filters.selectedAgents.some(sa => expAgents.some(ea => ea.includes(sa.toLowerCase().replace(/[-_]/g, ""))));
         if (!hasMatch) return false;
       }
 
-      // Participation filter
       if (filters.participationTypes.length > 0) {
-        const matchesParticipation = filters.participationTypes.some((type) => {
-          if (type === "With Human") return exp.hasHuman === true;
-          if (type === "AI Only") return exp.hasHuman === false;
-          return false;
-        });
-        if (!matchesParticipation) return false;
+         const isHuman = filters.participationTypes.includes("With Human") && exp.hasHuman;
+         const isAI = filters.participationTypes.includes("AI Only") && !exp.hasHuman;
+         if (!isHuman && !isAI) return false;
       }
-
-      // Number of rounds filter - use actual rounds
-      if (filters.numRounds > 0 && getActualNumRounds(exp) !== filters.numRounds) {
-        return false;
-      }
-
-      // Number of agents filter - use actual agents
-      if (filters.numAgents > 0 && getActualNumAgents(exp) !== filters.numAgents) {
-        return false;
-      }
-
       return true;
     });
   }, [experiments, filters]);
 
-  const clearFilters = () => {
-    setFilters(getInitialFilters());
-  };
-  
-  const hasActiveFilters = () => {
-    return (
-      filters.searchTerm !== "" ||
-      filters.status !== "all" ||
-      filters.selectedDatasets.length > 0 ||
-      filters.participationTypes.length > 0 ||
-      filters.selectedAgents.length > 0 ||
-      filters.numRounds > 0 ||
-      filters.numAgents > 0
-    );
-  };
-
-  const handleNewExperiment = () => {
-    router.push(`/debate/new`);
-  };
-  
-  const handleDebugger = () => {
-    router.push(`/debate/debug`);
-  };
-  
-  const handleViewExperiment = (experiment: Experiment) => {
-    router.push(`/debate/${experiment.id}?seed=${experiment.selectedSeed}`);
-  };
-
-  const handleLogout = async () => {
-    try {
-      router.push("/");
-    } catch (error) {
-      console.error("Logout error:", error);
-      router.push("/");
-    }
-  };
-
-  const getPerformanceColor = (score: number) => {
-    if (score >= 0.8)
-      return "text-emerald-700 bg-emerald-50 border-emerald-200";
-    if (score >= 0.6) return "text-amber-700 bg-amber-50 border-amber-200";
-    return "text-red-700 bg-red-50 border-red-200";
-  };
-
-  const getStatusIcon = (status: string) => {
-    if (status === "completed") return <CheckCircle className="w-4 h-4" />;
-    return <Activity className="w-4 h-4 animate-pulse" />;
-  };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-linear-to-br from-slate-50 to-blue-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-slate-600 text-lg font-medium">
-            Loading experiments...
-          </p>
-          <p className="text-slate-400 text-sm mt-1">
-            Please wait while we fetch your data
-          </p>
-        </div>
-      </div>
-    );
-  }
 
   return (
-    <div className="min-h-screen bg-linear-to-br from-slate-50 to-blue-50">
-      <div className="bg-white/80 backdrop-blur-xl border-b border-slate-200/60 sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between py-4">
-            <div className="flex items-center space-x-4">
-              <div>
-                <h1 className="text-2xl font-bold bg-linear-to-r from-slate-900 to-slate-700 bg-clip-text text-transparent">
-                  Normativity Lab
-                </h1>
-                <p className="text-sm text-slate-500 font-medium">
-                  AI Debate Research Platform
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center space-x-3">
-              <Button
-                buttonStyle="primary"
-                onClick={handleNewExperiment}
-                label="New Experiment"
-                icon={Plus}
-                size="md"
-                iconColor="white"
-              ></Button>
-              <Button
-                buttonStyle="secondary"
-                onClick={handleDebugger}
-                label="Re-run with Human"
-                icon={Plus}
-                size="md"
-                iconColor="white"
-              ></Button>
-            </div>
-          </div>
+    <div className="flex h-screen w-full bg-[#f8f9fc] text-slate-800 font-sans overflow-hidden">
+      <aside className="w-16 bg-white border-r border-slate-200 flex flex-col items-center py-6 gap-6 z-20 flex-shrink-0 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+        <div 
+          className="w-10 h-10 bg-slate-900 rounded-xl flex items-center justify-center text-white mb-2 shadow-lg shadow-slate-200 cursor-pointer"
+          onClick={() => router.push('/')}
+        >
+          <LayoutGrid size={20} />
         </div>
-      </div>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
-            <div className="flex items-center">
-              <X className="w-5 h-5 text-red-500 mr-3" />
-              <p className="text-red-800 font-medium">{error}</p>
+        <nav className="flex flex-col gap-3 w-full px-2">
+          
+          <button className="p-3 rounded-xl bg-blue-50 text-blue-600 transition-colors relative group">
+            <LayoutGrid size={20} />
+            <span className="absolute left-14 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
+              Dashboard
+            </span>
+          </button>
+
+          <button 
+            onClick={() => router.push('/debate-annotation')} 
+            className="p-3 rounded-xl text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-colors relative group"
+          >
+            <FileText size={20} />
+            <span className="absolute left-14 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
+              Debate Annotation
+            </span>
+          </button>
+          
+          <button 
+            onClick={() => router.push('/argumentative-debate')} 
+            className="p-3 rounded-xl text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-colors relative group"
+          >
+            <Gavel size={20} />
+            <span className="absolute left-14 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
+              Argumentative Debate
+            </span>
+          </button>
+
+          <button 
+            onClick={() => router.push('/debate/new')} 
+            className="p-3 rounded-xl text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-colors relative group"
+          >
+            <MessageSquare size={20} />
+            <span className="absolute left-14 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
+              Basic Debate
+            </span>
+          </button>
+
+          <button 
+            onClick={() => router.push('/debate/debug')} 
+            className="p-3 rounded-xl text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-colors relative group"
+          >
+            <Bug size={20} />
+            <span className="absolute left-14 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
+              Debug
+            </span>
+          </button>
+        </nav>
+      </aside>
+
+      <aside className="hidden lg:flex w-72 bg-white border-r border-slate-200 flex-col overflow-hidden flex-shrink-0">
+        <div className="p-6 border-b border-slate-100">
+            <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                <Filter size={12} /> Filters
+            </h2>
+            <div className="relative group">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={14} />
+                <input 
+                    type="text" 
+                    placeholder="Search experiments..." 
+                    value={filters.searchTerm}
+                    onChange={(e) => setFilters(prev => ({ ...prev, searchTerm: e.target.value }))}
+                    className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-transparent hover:bg-slate-100 focus:bg-white focus:border-blue-500 rounded-lg text-sm transition-all outline-none"
+                />
             </div>
-          </div>
-        )}
-
-        <div className="bg-white/70 backdrop-blur-xl rounded-2xl border border-slate-200/60 p-6 mb-8 shadow-lg">
-          <div className="flex flex-col lg:flex-row gap-4 mb-4">
-            <div className="flex-1 relative">
-              <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-slate-400 w-5 h-5" />
-              <input
-                type="text"
-                placeholder="Search experiments, datasets, or agents..."
-                value={filters.searchTerm}
-                onChange={(e) =>
-                  setFilters((prev) => ({
-                    ...prev,
-                    searchTerm: e.target.value,
-                  }))
-                }
-                className="w-full pl-12 pr-4 py-3 bg-slate-50/50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all duration-200 text-slate-700 placeholder-slate-400"
-              />
-            </div>
-
-            <button
-              onClick={() => setShowFilters(!showFilters)}
-              className={`flex items-center space-x-2 px-4 py-3 rounded-xl font-medium transition-all duration-200 ${
-                hasActiveFilters()
-                  ? "bg-blue-100 text-blue-700 border border-blue-200"
-                  : "bg-slate-50/50 text-slate-600 border border-slate-200 hover:bg-slate-100"
-              }`}
-            >
-              <Filter className="w-4 h-4" />
-              <span>Filters</span>
-              <ChevronDown
-                className={`w-4 h-4 transition-transform duration-200 ${
-                  showFilters ? "rotate-180" : ""
-                }`}
-              />
-            </button>
-
-            {hasActiveFilters() && (
-              <button
-                onClick={clearFilters}
-                className="flex items-center space-x-2 px-4 py-3 bg-red-50 text-red-600 border border-red-200 rounded-xl hover:bg-red-100 transition-all duration-200 font-medium"
-              >
-                <X className="w-4 h-4" />
-                <span>Clear</span>
-              </button>
-            )}
-          </div>
-
-          {showFilters && (
-            <div className="border-t border-slate-200 pt-3 mt-3">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-1">
-                    AI Agents
-                  </label>
-                  <div className="bg-slate-50/50 rounded-lg p-2 text-sm space-y-1 border border-slate-200">
-                    {availableAgents.map((agent) => (
-                      <label
-                        key={agent}
-                        className="flex items-center space-x-3 cursor-pointer hover:bg-white/50 rounded-lg p-2 transition-colors duration-150"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={filters.selectedAgents.includes(agent)}
-                          onChange={() => handleAgentToggle(agent)}
-                          className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500/20"
-                        />
-                        <span className="text-sm text-slate-700">{agent}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-1">
-                    Datasets
-                  </label>
-                  <div className="space-y-2 max-h-48 overflow-y-auto bg-slate-50/50 rounded-lg p-3 border border-slate-200">
-                    {availableDatasets.map((dataset) => (
-                      <label
-                        key={dataset}
-                        className="flex items-center space-x-3 cursor-pointer hover:bg-white/50 rounded-lg p-2 transition-colors duration-150"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={filters.selectedDatasets.includes(dataset)}
-                          onChange={() => handleDatasetToggle(dataset)}
-                          className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500/20"
-                        />
-                        <span className="text-sm text-slate-700">
-                          {getDatasetDisplayName(dataset)}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-6">
-                  <div>
-                    <label className="block text-sm font-semibold text-slate-700 mb-2">
-                      Number of Rounds
-                    </label>
-                    <select
-                      value={filters.numRounds}
-                      onChange={(e) =>
-                        setFilters((prev) => ({
-                          ...prev,
-                          numRounds: parseInt(e.target.value),
-                        }))
-                      }
-                      className="w-full px-3 py-2 bg-slate-50/50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all duration-200 text-slate-700"
-                    >
-                      <option value={0}>Any</option>
-                      <option value={1}>1</option>
-                      <option value={2}>2</option>
-                      <option value={3}>3</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-slate-700 mb-2">
-                      Number of Agents
-                    </label>
-                    <select
-                      value={filters.numAgents}
-                      onChange={(e) =>
-                        setFilters((prev) => ({
-                          ...prev,
-                          numAgents: parseInt(e.target.value),
-                        }))
-                      }
-                      className="w-full px-3 py-2 bg-slate-50/50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all duration-200 text-slate-700"
-                    >
-                      <option value={0}>Any</option>
-                      <option value={1}>1</option>
-                      <option value={2}>2</option>
-                      <option value={3}>3</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
         
-        <div className="flex items-center justify-between mb-6">
-          <p className="text-slate-600 font-medium">
-            Showing{" "}
-            <span className="text-slate-900 font-semibold">
-              {filteredExperiments.length}
-            </span>{" "}
-            of{" "}
-            <span className="text-slate-900 font-semibold">
-              {experiments.length}
-            </span>{" "}
-            experiments
-            {hasActiveFilters() && (
-              <span className="text-blue-600 ml-1">(filtered)</span>
-            )}
-          </p>
-        </div>
-
-        <div className="space-y-4">
-          {filteredExperiments.length === 0 ? (
-            <div className="bg-white/70 backdrop-blur-xl rounded-2xl border border-slate-200/60 p-12 text-center">
-              <MessageSquare className="w-16 h-16 text-slate-300 mx-auto mb-4" />
-              <h3 className="text-xl font-semibold text-slate-700 mb-2">
-                {hasActiveFilters()
-                  ? "No experiments match your filters"
-                  : "No experiments found"}
-              </h3>
-              <p className="text-slate-500">
-                {hasActiveFilters()
-                  ? "Try adjusting your filter criteria to see more results"
-                  : "Your experiments will appear here once you create them"}
-              </p>
-            </div>
-          ) : (
-            filteredExperiments.map((experiment) => (
-              <div
-                key={experiment.id}
-                className="bg-white/70 backdrop-blur-xl rounded-2xl border border-slate-200/60 p-6 hover:shadow-xl hover:border-slate-300/60 transition-all duration-300 transform hover:-translate-y-1"
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center space-x-3">
-                        <h3 className="text-xl font-bold text-slate-900">
-                          {experiment.name}
-                        </h3>
-                        <div className="flex items-center space-x-2">
-                          <span
-                            className={`inline-flex items-center space-x-1 px-3 py-1 rounded-full text-xs font-semibold ${
-                              experiment.status === "completed"
-                                ? "bg-emerald-100 text-emerald-700 border border-emerald-200"
-                                : "bg-amber-100 text-amber-700 border border-amber-200"
-                            }`}
-                          >
-                            {getStatusIcon(experiment.status)}
-                            <span className="capitalize">
-                              {experiment.status}
-                            </span>
-                          </span>
-                          {experiment.hasHuman && (
-                            <span className="inline-flex items-center space-x-1 px-3 py-1 bg-purple-100 text-purple-700 border border-purple-200 rounded-full text-xs font-semibold">
-                              <Users className="w-3 h-3" />
-                              <span>Human</span>
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="space-y-3">
-                      <div className="flex items-center space-x-3">
-                        <span className="text-sm font-medium text-slate-600 flex items-center space-x-1">
-                          <span>Agents:</span>
-                        </span>
-                        <div className="flex flex-wrap gap-2">
-                          {experiment.agents.slice(0, 3).map((agent, index) => (
-                            <span
-                              key={index}
-                              className="px-3 py-1 bg-slate-100 text-slate-700 rounded-lg text-xs font-medium border border-slate-200"
-                            >
-                              {agent}
-                            </span>
-                          ))}
-                          {experiment.agents.length > 3 && (
-                            <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-lg text-xs font-medium border border-slate-200">
-                              +{experiment.agents.length - 3} more
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center space-x-3">
-                        <span className="text-sm font-medium text-slate-600 flex items-center space-x-1">
-                          <span>Datasets:</span>
-                        </span>
-                        <div className="flex flex-wrap gap-2">
-                          {experiment.datasets.map((dataset, index) => (
-                            <span
-                              key={index}
-                              className={`px-3 py-1 rounded-lg text-xs font-medium border ${"bg-blue-100 text-blue-700 border-blue-200"}`}
-                            >
-                              {getDatasetDisplayName(dataset)}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center space-x-3">
-                        <span className="text-sm text-gray-600">Seeds:</span>
-                        <div className="flex flex-wrap gap-1">
-                          {experiment.availableSeeds.map((seed, index) => (
-                            <span
-                              key={index}
-                              onClick={() =>
-                                handleSeedChange(experiment.id, seed)
-                              }
-                              className={`px-2 py-1 rounded text-xs font-medium cursor-pointer transition-colors ${
-                                seed === experiment.selectedSeed
-                                  ? "bg-green-100 text-green-800 border border-green-200"
-                                  : "bg-gray-100 text-gray-700"
-                              }`}
-                            >
-                              {seed}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Right side with stats and button */}
-                  <div className="ml-6 flex flex-col items-end space-y-4">
-                    {/* Stats Grid */}
-                    <Button
-                      buttonStyle="secondary"
-                      size="md"
-                      variant="solid"
-                      onClick={() => handleViewExperiment(experiment)}
-                    >
-                      View Details
-                    </Button>
-                    <div className="grid grid-cols-1 gap-2 text-right">
-                      <div className="flex items-center text-sm text-gray-600">
-                        <User className="w-4 h-4 mr-2 text-blue-500" />
-                        <span className="font-medium">
-                          {getActualNumAgents(experiment)}{" "}
-                          {getActualNumAgents(experiment) === 1 ? "agent" : "agents"}
-                        </span>
-                      </div>
-                      <div className="flex items-center text-sm text-gray-600">
-                        <Clock className="w-4 h-4 mr-2 text-green-500" />
-                        <span className="font-medium">
-                          {getActualNumRounds(experiment)}{" "}
-                          {getActualNumRounds(experiment) === 1 ? "round" : "rounds"}
-                        </span>
-                      </div>
-                      <div className="flex items-center text-sm text-gray-600">
-                        <MessageSquare className="w-4 h-4 mr-2 text-purple-500" />
-                        <span className="font-medium">
-                          {experiment.numQuestions} questions
-                        </span>
-                      </div>
-                    </div>
-                  </div>
+        <div className="flex-1 overflow-y-auto p-6 space-y-8">
+            <div>
+                <h3 className="text-xs font-bold text-slate-800 mb-3 uppercase tracking-wide">Datasets</h3>
+                <div className="space-y-2">
+                    {availableDatasets.map(ds => (
+                         <label key={ds} className="flex items-center gap-3 cursor-pointer group">
+                             <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${filters.selectedDatasets.includes(ds) ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white group-hover:border-blue-400'}`}>
+                                 {filters.selectedDatasets.includes(ds) && <CheckCircle size={10} />}
+                             </div>
+                             <input type="checkbox" className="hidden" checked={filters.selectedDatasets.includes(ds)} onChange={() => toggleFilter('selectedDatasets', ds)} />
+                             <span className={`text-sm transition-colors ${filters.selectedDatasets.includes(ds) ? 'text-slate-900 font-medium' : 'text-slate-600 group-hover:text-slate-900'}`}>{getDatasetDisplayName(ds)}</span>
+                         </label>
+                    ))}
                 </div>
-              </div>
-            ))
-          )}
+            </div>
+
+            <div>
+                <h3 className="text-xs font-bold text-slate-800 mb-3 uppercase tracking-wide">Agents</h3>
+                <div className="space-y-2">
+                    {availableAgents.map(agent => (
+                         <label key={agent} className="flex items-center gap-3 cursor-pointer group">
+                             <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${filters.selectedAgents.includes(agent) ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white group-hover:border-blue-400'}`}>
+                                 {filters.selectedAgents.includes(agent) && <CheckCircle size={10} />}
+                             </div>
+                             <input type="checkbox" className="hidden" checked={filters.selectedAgents.includes(agent)} onChange={() => toggleFilter('selectedAgents', agent)} />
+                             <span className={`text-sm truncate transition-colors ${filters.selectedAgents.includes(agent) ? 'text-slate-900 font-medium' : 'text-slate-600 group-hover:text-slate-900'}`} title={agent}>{agent}</span>
+                         </label>
+                    ))}
+                </div>
+            </div>
+            
+            <button onClick={() => setFilters(getInitialFilters())} className="text-xs text-red-500 hover:text-red-700 hover:underline flex items-center gap-1 font-medium transition-all">
+                <X size={12} /> Clear all filters
+            </button>
         </div>
-      </div>
+      </aside>
+
+      <main className="flex-1 flex flex-col min-w-0 bg-[#f8f9fc]">
+        
+        <header className="px-8 py-6 flex justify-between items-center sticky top-0 z-10 bg-[#f8f9fc]/90 backdrop-blur-sm">
+            <div>
+                <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Experiments</h1>
+                <p className="text-sm text-slate-500 mt-1">
+                    Showing {filteredExperiments.length} run{filteredExperiments.length !== 1 && 's'}
+                </p>
+            </div>
+        </header>
+
+        <div className="flex-1 overflow-y-auto px-8 pb-8">
+             {loading ? (
+                 <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                     <div className="w-8 h-8 border-2 border-slate-300 border-t-blue-600 rounded-full animate-spin mb-4" />
+                     <p>Loading experiments...</p>
+                 </div>
+             ) : filteredExperiments.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-64 bg-white rounded-2xl border border-dashed border-slate-300 text-slate-400">
+                    <Bot size={48} className="mb-4 text-slate-200" />
+                    <p>No experiments found matching your filters.</p>
+                </div>
+             ) : (
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 pb-12">
+                    {filteredExperiments.map(experiment => (
+                        <div 
+                            key={experiment.id} 
+                            onClick={() => router.push(`/debate/${experiment.id}?seed=${experiment.selectedSeed}`)}
+                            className="group bg-white rounded-2xl border border-slate-200 shadow-[0_2px_8px_rgba(0,0,0,0.02)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.06)] hover:border-blue-200 transition-all duration-300 flex flex-col cursor-pointer overflow-hidden"
+                        >
+                            <div className="p-6">
+                                <div className="flex justify-between items-start mb-3">
+                                    <h3 className="font-bold text-slate-900 text-lg line-clamp-1 pr-4 group-hover:text-blue-600 transition-colors">
+                                        {experiment.name}
+                                    </h3>
+                                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-slate-400 bg-slate-50 px-2.5 py-1 rounded-full whitespace-nowrap">
+                                        <Clock size={10} /> {new Date(experiment.startDate).toLocaleDateString()}
+                                    </span>
+                                </div>
+
+                                <div className="mb-5 flex gap-2">
+                                     <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                                        experiment.status === "completed" 
+                                          ? "bg-emerald-50 text-emerald-700 border-emerald-100" 
+                                          : "bg-amber-50 text-amber-700 border-amber-100"
+                                      }`}>
+                                        {experiment.status === "completed" ? <CheckCircle size={10} /> : <Activity size={10} />}
+                                        {experiment.status}
+                                      </span>
+                                      {experiment.hasHuman && (
+                                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-purple-50 text-purple-700 border border-purple-100">
+                                          <Users size={10} /> Human
+                                        </span>
+                                      )}
+                                </div>
+
+                                <div className="grid grid-cols-3 divide-x divide-slate-100 bg-slate-50/50 rounded-xl border border-slate-100 mb-5">
+                                     <div className="py-3 px-2 flex flex-col items-center">
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Rounds</span>
+                                        <span className="text-sm font-bold text-slate-700">{getActualNumRounds(experiment)}</span>
+                                     </div>
+                                     <div className="py-3 px-2 flex flex-col items-center">
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Agents</span>
+                                        <span className="text-sm font-bold text-slate-700">{getActualNumAgents(experiment)}</span>
+                                     </div>
+                                     <div className="py-3 px-2 flex flex-col items-center">
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Questions</span>
+                                        <span className="text-sm font-bold text-slate-700">{experiment.numQuestions}</span>
+                                     </div>
+                                </div>
+
+                                <div className="space-y-3">
+                                    <div className="flex items-start gap-3">
+                                        <div className="mt-1 w-5 h-5 rounded bg-blue-50 text-blue-500 flex items-center justify-center flex-shrink-0">
+                                            <Database size={12} />
+                                        </div>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {experiment.datasets.map(d => (
+                                                <span key={d} className="px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-600 text-[11px] font-medium shadow-sm">
+                                                    {getDatasetDisplayName(d)}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div className="flex items-start gap-3">
+                                         <div className="mt-1 w-5 h-5 rounded bg-purple-50 text-purple-500 flex items-center justify-center flex-shrink-0">
+                                            <Bot size={12} />
+                                        </div>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {experiment.agents.slice(0, 3).map(a => (
+                                                <span key={a} className="px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-600 text-[11px] font-medium shadow-sm">
+                                                    {a}
+                                                </span>
+                                            ))}
+                                            {experiment.agents.length > 3 && (
+                                                <span className="px-2 py-0.5 rounded bg-slate-50 text-slate-400 border border-slate-100 text-[11px] font-medium">+{experiment.agents.length - 3}</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="mt-auto bg-slate-50/50 border-t border-slate-100 p-4 flex items-center justify-between group-hover:bg-blue-50/10 transition-colors">
+                                <div className="flex items-center gap-3 overflow-hidden">
+                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Seed</span>
+                                    <div className="flex gap-1 overflow-x-auto no-scrollbar mask-gradient pr-2">
+                                        {experiment.availableSeeds.map(seed => (
+                                            <button 
+                                                key={seed}
+                                                onClick={(e) => { e.stopPropagation(); handleSeedChange(experiment.id, seed); }}
+                                                className={`w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold font-mono transition-all flex-shrink-0 ${
+                                                    seed === experiment.selectedSeed 
+                                                    ? 'bg-slate-800 text-white shadow-md scale-105' 
+                                                    : 'bg-white border border-slate-200 text-slate-500 hover:border-slate-400'
+                                                }`}
+                                            >
+                                                {seed}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                                <span className="text-slate-300 group-hover:text-blue-500 transition-colors transform group-hover:translate-x-1">
+                                    <ArrowRight size={20} />
+                                </span>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+             )}
+        </div>
+      </main>
     </div>
   );
 };

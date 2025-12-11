@@ -8,7 +8,7 @@ import {
 } from "./router/routes";
 import { userRouter } from "./router/users/index";
 import { debateRouter } from "./router/debates/index";
-
+import { argumentativeRouter } from "./router/argumentative-debate/index";
 const app = express();
 
 app.use(express.json());
@@ -20,6 +20,7 @@ app.use(express.json());
 
 app.use(appRoutesPrefix + userRoutePrefix, userRouter);
 app.use(appRoutesPrefix + debateRoutePrefix, debateRouter);
+app.use(appRoutesPrefix + debateRoutePrefix, argumentativeRouter);
 app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok" });
 });

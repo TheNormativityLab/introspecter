@@ -1,15 +1,18 @@
-"""
-Celery tasks for running debates with human-in-the-loop support.
-Updated to use per-debate orchestrators with timeout cleanup.
-"""
 import asyncio
 import logging
-import time, os
-import uuid, json
+import time
+import os
+import uuid
+import json
 import aio_pika
+import litellm
 from typing import Dict, Any, Optional
 from celery import Task
 from datetime import datetime
+from pathlib import Path
+from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
+from sqlalchemy import update
 
 from src.api.celery_app import celery_app
 from src.debates.basic_debate import BasicDebateOrchestrator
@@ -17,93 +20,40 @@ from src.database.database import DatabaseManager, Debate
 from src.database.repository import DebateRepository
 
 logger = logging.getLogger(__name__)
-
 ACTIVE_ORCHESTRATORS: Dict[str, tuple[BasicDebateOrchestrator, float]] = {}
-ORCHESTRATOR_TIMEOUT = 600  # 10 minutes
-
+ORCHESTRATOR_TIMEOUT = 600
+RABBITMQ_URL = os.getenv("CELERY_BROKER_URL", "amqp://guest:guest@localhost:5672/")
 
 def cleanup_idle_orchestrators():
-    """Remove orchestrators that have been idle for too long."""
     current_time = time.time()
-    to_remove = []
-    
-    for debate_id, (orchestrator, last_activity) in ACTIVE_ORCHESTRATORS.items():
-        if current_time - last_activity > ORCHESTRATOR_TIMEOUT:
-            to_remove.append(debate_id)
-            logger.info(f"Timing out idle orchestrator for debate {debate_id}")
-    
-    for debate_id in to_remove:
-        ACTIVE_ORCHESTRATORS.pop(debate_id, None)
-    
-    if to_remove:
-        logger.info(f"Cleaned up {len(to_remove)} idle orchestrators")
-
+    to_remove = [
+        did for did, (_, last_act) in ACTIVE_ORCHESTRATORS.items() 
+        if current_time - last_act > ORCHESTRATOR_TIMEOUT
+    ]
+    for did in to_remove:
+        ACTIVE_ORCHESTRATORS.pop(did, None)
 
 def get_or_create_orchestrator(debate_id: str) -> BasicDebateOrchestrator:
-    """Get existing orchestrator or create new one."""
     cleanup_idle_orchestrators()
-    
     if debate_id in ACTIVE_ORCHESTRATORS:
-        orchestrator, _ = ACTIVE_ORCHESTRATORS[debate_id]
-        ACTIVE_ORCHESTRATORS[debate_id] = (orchestrator, time.time())
-        logger.info(f"Reusing existing orchestrator for debate {debate_id}")
-        return orchestrator
+        orch, _ = ACTIVE_ORCHESTRATORS[debate_id]
+        ACTIVE_ORCHESTRATORS[debate_id] = (orch, time.time())
+        return orch
     
-    orchestrator = BasicDebateOrchestrator()
-    ACTIVE_ORCHESTRATORS[debate_id] = (orchestrator, time.time())
-    logger.info(f"Created new orchestrator for debate {debate_id}")
-    return orchestrator
-
+    orch = BasicDebateOrchestrator()
+    ACTIVE_ORCHESTRATORS[debate_id] = (orch, time.time())
+    return orch
 
 def update_orchestrator_activity(debate_id: str):
-    """Update the last activity timestamp for an orchestrator."""
     if debate_id in ACTIVE_ORCHESTRATORS:
-        orchestrator, _ = ACTIVE_ORCHESTRATORS[debate_id]
-        ACTIVE_ORCHESTRATORS[debate_id] = (orchestrator, time.time())
-
+        orch, _ = ACTIVE_ORCHESTRATORS[debate_id]
+        ACTIVE_ORCHESTRATORS[debate_id] = (orch, time.time())
 
 def remove_orchestrator(debate_id: str):
-    """Remove an orchestrator (e.g., when debate completes or errors)."""
-    if debate_id in ACTIVE_ORCHESTRATORS:
-        ACTIVE_ORCHESTRATORS.pop(debate_id)
-        logger.info(f"Removed orchestrator for debate {debate_id}")
+    ACTIVE_ORCHESTRATORS.pop(debate_id, None)
 
-@celery_app.task(
-    name="src.api.tasks.run_debate_task",
-    bind=True,
-    track_started=True,
-)
-def run_debate_task(
-    self, 
-    debate_id: str, 
-    debate_type: str = "basic_debate",
-    hydra_cfg: dict = None,
-    questions: list = None,
-    num_rounds: int = 3,
-    num_agents: int = 2,
-    agent_models: list = None,
-    human_agent_index: int = None,
-    enhanced_metadata: dict = None,
-    **kwargs
-):
-    """
-    Run a debate task with a fresh orchestrator per debate.
-    Compatible with both standard asyncio and gevent pools.
-    
-    Args:
-        debate_id: Unique identifier for the debate
-        debate_type: Type of debate to run (default: "basic_debate")
-        hydra_cfg: Hydra configuration dictionary
-        questions: List of questions for the debate
-        num_rounds: Number of debate rounds
-        num_agents: Number of agents
-        human_agent_index: Index of human agent (if any)
-        enhanced_metadata: Enhanced metadata including agent info
-        **kwargs: Additional arguments (for compatibility)
-    """
-    logger.info(f"TASK STARTED: {debate_type} debate {debate_id}")
-    logger.info(f"Questions: {len(questions) if questions else 0}, Rounds: {num_rounds}, Agents: {num_agents}")
-    
+@celery_app.task(name="src.api.tasks.run_debate_task", bind=True, track_started=True)
+def run_debate_task(self, debate_id: str, debate_type: str = "basic_debate", hydra_cfg: dict = None, questions: list = None, num_rounds: int = 3, num_agents: int = 2, agent_models: list = None, human_agent_index: int = None, enhanced_metadata: dict = None, **kwargs):
     config_dict = hydra_cfg or {}
     config_dict.update({
         'questions': questions or [],
@@ -116,47 +66,15 @@ def run_debate_task(
     })
 
     try:
-        logger.info("Running with standard asyncio")
-        result = asyncio.run(_run_debate_async(debate_id, config_dict))
-        
-        logger.info(f"TASK COMPLETED: debate {debate_id}")
-        return result
-        
-    except Exception as e:
-        logger.error(f"TASK FAILED: debate {debate_id}: {e}", exc_info=True)
+        return asyncio.run(_run_debate_async(debate_id, config_dict))
+    except Exception:
         remove_orchestrator(debate_id)
         raise
 
-@celery_app.task(
-    name="src.api.tasks.run_replay_task",
-    bind=True,
-    track_started=True,
-)
-def run_replay_task(
-    self,
-    debate_id: str,
-    debate_type: str = "basic_debate",
-    original_config: dict = None,
-    questions: list = None,
-    num_rounds: int = 3,
-    experiment_name: str = "replay_debate",
-    previous_rounds: list = None,
-    start_from_round: int = 0,
-    replace_agent_index: int = None,
-    replace_agent_name: str = None,
-    enhanced_metadata: dict = None,
-    **kwargs
-):
-    """
-    Replay a debate from a specific round with human replacement.
-    
-    This task handles all config reconstruction and agent setup logic.
-    """
-    logger.info(f"REPLAY TASK STARTED: {debate_type} debate {debate_id}")
-    logger.info(f"Starting from round {start_from_round}, replacing agent: index={replace_agent_index}, name={replace_agent_name}")
-    
+@celery_app.task(name="src.api.tasks.run_replay_task", bind=True, track_started=True)
+def run_replay_task(self, debate_id: str, debate_type: str = "basic_debate", original_config: dict = None, questions: list = None, num_rounds: int = 3, experiment_name: str = "replay_debate", previous_rounds: list = None, start_from_round: int = 0, replace_agent_index: int = None, replace_agent_name: str = None, enhanced_metadata: dict = None, **kwargs):
     try:
-        result = asyncio.run(_run_replay_async(
+        return asyncio.run(_run_replay_async(
             debate_id=debate_id,
             original_config=original_config,
             questions=questions,
@@ -169,671 +87,216 @@ def run_replay_task(
             enhanced_metadata=enhanced_metadata,
             **kwargs
         ))
-        
-        logger.info(f"REPLAY TASK COMPLETED: debate {debate_id}")
-        return result
-
-    except Exception as e:
-        logger.error(f"REPLAY TASK FAILED: debate {debate_id}: {e}", exc_info=True)
+    except Exception:
         remove_orchestrator(debate_id)
         raise
 
-async def _run_replay_async(
-    debate_id: str,
-    original_config: dict,
-    questions: list,
-    num_rounds: int,
-    experiment_name: str,
-    previous_rounds: list,
-    start_from_round: int,
-    replace_agent_index: int,
-    replace_agent_name: str,
-    enhanced_metadata: dict = None,
-    **kwargs
-) -> dict:
-    """Execute the replay with full config reconstruction."""
-    
-    human_agent_index = replace_agent_index    
+async def _run_replay_async(debate_id: str, original_config: dict, questions: list, num_rounds: int, experiment_name: str, previous_rounds: list, start_from_round: int, replace_agent_index: int, replace_agent_name: str, enhanced_metadata: dict = None, **kwargs) -> dict:
+    human_agent_index = replace_agent_index
     _validate_replay_config(original_config, start_from_round)
     
     orchestrator = get_or_create_orchestrator(debate_id)
-    rabbitmq_url = os.getenv("CELERY_BROKER_URL", "amqp://guest:guest@localhost:5672/")
-    connection = None
-    channel = None
-    human_response_queue = None
-    human_ready_queue = None
     
     try:
-        llm_configs_from_original = original_config.get("llm_conf", [])  
+        llm_configs_from_original = original_config.get("llm_conf", [])
         agent_counts_dict = original_config.get("agent_counts", {})
-        logger.info(f"Agent counts from original config: {agent_counts_dict}")
         aggregated_counts = {}
         for key, count in agent_counts_dict.items():
-            base_model = key.rsplit('_agent_', 1)[0] if '_agent_' in key else key
-            aggregated_counts[base_model] = aggregated_counts.get(base_model, 0) + count
-        logger.info(f"Aggregated counts by model: {aggregated_counts}")
+            base = key.rsplit('_agent_', 1)[0] if '_agent_' in key else key
+            aggregated_counts[base] = aggregated_counts.get(base, 0) + count
+            
         agent_models = []
         for llm_config in llm_configs_from_original:
-            model_name = llm_config.get("modelName") or llm_config.get("model")            
-            if model_name not in aggregated_counts:
-                logger.info(f"Skipping {model_name} - not in agent_counts")
+            m_name = llm_config.get("modelName") or llm_config.get("model")
+            if m_name not in aggregated_counts:
                 continue
+            c_name = get_config_name_from_model(llm_config)
+            count = aggregated_counts[m_name]
+            agent_models.extend([c_name] * count)
             
-            config_name = get_config_name_from_model(llm_config)
-            logger.info(f"Mapped {model_name} -> {config_name}")
-            
-            count = aggregated_counts[model_name]
-            logger.info(f"Adding {count} instances of {config_name}")
-            for _ in range(count):
-                agent_models.append(config_name)
-        if not agent_models:
-            raise ValueError(f"Could not reconstruct agent_models from config")
-                
-        logger.info(f"Reconstructed agent_models: {agent_models}")
-        
-        # Find human_agent_index if using name
         if human_agent_index is None and replace_agent_name:
-            logger.info(f"Looking for agent: '{replace_agent_name}'")
-            
-            # Extract base model name and agent number from replace_agent_name
             if '_agent_' in replace_agent_name:
-                base_model_name, agent_num_str = replace_agent_name.rsplit('_agent_', 1)
-                agent_num = int(agent_num_str)
-                logger.info(f"Parsed: base_model='{base_model_name}', agent_num={agent_num}")
-
-                matching_model = None
-                for key in agent_counts_dict.keys():
-                    key_base = key.rsplit('_agent_', 1)[0] if '_agent_' in key else key
-                    if key_base.startswith(base_model_name):
-                        matching_model = key_base
-                        break
-                
-                if matching_model is None:
-                    raise ValueError(f"Could not find model starting with '{base_model_name}' in agent_counts")
-                
-                logger.info(f"Matched '{base_model_name}' to '{matching_model}'")
-                
-                # Find the matching llm_config to get the config_name
-                target_config_name = None
-                for llm_config in llm_configs_from_original:
-                    model_name = llm_config.get("modelName") or llm_config.get("model")
-                    if model_name == matching_model:
-                        target_config_name = get_config_name_from_model(llm_config)
-                        break
-                
-                if target_config_name is None:
-                    raise ValueError(f"Could not find model '{matching_model}' in llm_conf")
-                
-                logger.info(f"Target config name: '{target_config_name}'")
-                
-                # Find the Nth occurrence of this config_name in agent_models
-                occurrence = 0
-                for idx, model in enumerate(agent_models):
-                    if model == target_config_name:
-                        if occurrence == agent_num:
-                            human_agent_index = idx
-                            logger.info(f"Found at index {idx}")
-                            break
-                        occurrence += 1
-                
-                if human_agent_index is None:
-                    raise ValueError(f"Agent '{replace_agent_name}' (occurrence {agent_num} of '{target_config_name}') not found in {agent_models}")
+                base, num_str = replace_agent_name.rsplit('_agent_', 1)
+                num = int(num_str)
+                matching = next((k.rsplit('_agent_', 1)[0] for k in agent_counts_dict if k.startswith(base)), None)
+                if matching:
+                    target_conf = next((get_config_name_from_model(c) for c in llm_configs_from_original if (c.get("modelName") or c.get("model")) == matching), None)
+                    if target_conf:
+                        occ = 0
+                        for idx, m in enumerate(agent_models):
+                            if m == target_conf:
+                                if occ == num:
+                                    human_agent_index = idx
+                                    break
+                                occ += 1
             else:
-                # Fallback to original logic if no _agent_ suffix
                 human_agent_index = _find_agent_index_by_name(agent_models, replace_agent_name)
-                if human_agent_index is None:
-                    raise ValueError(f"Agent '{replace_agent_name}' not found in {agent_models}")
-        
-        # Replace the agent with human
-        if human_agent_index is not None:
-            logger.info(f"Replacing agent at index {human_agent_index} with human")
-            agent_models[human_agent_index] = "human-participant"
-        
-        logger.info("=" * 80)
-        logger.info("REPLAY CONFIGURATION SUMMARY")
-        logger.info(f"Debate ID: {debate_id}")
-        logger.info(f"Start from round: {start_from_round}")
-        logger.info(f"Total rounds: {num_rounds}")
-        logger.info(f"Human agent index: {human_agent_index}")
-        logger.info(f"Agent models: {agent_models}")
-        logger.info("=" * 80)
-        
-        # Build Hydra config
-        hydra_cfg = _build_hydra_config_for_replay_simple(
-            original_config=original_config,
-            agent_models=agent_models,
-            num_rounds=num_rounds,
-            experiment_name=experiment_name
-        )
 
+        if human_agent_index is not None:
+            agent_models[human_agent_index] = "human-participant"
+            
+        hydra_cfg = _build_hydra_config_for_replay_simple(original_config, agent_models, num_rounds, experiment_name)
         if llm_configs_from_original:
             hydra_cfg['llm_conf'] = llm_configs_from_original
-            logger.info(f"Injected {len(llm_configs_from_original)} full LLM configs into hydra_cfg")
-            for i, conf in enumerate(llm_configs_from_original):
-                logger.info(f"  Config {i}: {conf.get('modelName')} at {conf.get('apiBase', 'default')}")
-        
-        # Setup RabbitMQ for human participant
-        connection = await aio_pika.connect_robust(rabbitmq_url)
-        channel = await connection.channel()
-        
-        human_response_exchange = await channel.declare_exchange(
-            'human_responses',
-            aio_pika.ExchangeType.DIRECT,
-            durable=True
-        )
-        
-        human_response_queue = await channel.declare_queue(
-            f'human_response_{debate_id}',
-            durable=True,
-            auto_delete=False,
-            exclusive=False
-        )
-        await human_response_queue.bind(human_response_exchange, routing_key=debate_id)
-        
-        human_ready_queue = await channel.declare_queue(
-            f'human_ready_{debate_id}',
-            durable=True,
-            auto_delete=False,
-            exclusive=False
-        )
-        await human_ready_queue.bind(human_response_exchange, routing_key=f"{debate_id}_ready")
-        
-        logger.info(f"Setup RabbitMQ queues for replay debate {debate_id}")
-        
-        # Initialize orchestrator with full config
-        if orchestrator.status == "initialized":
-            await orchestrator.initialize_from_hydra(
-                debate_id=uuid.UUID(debate_id),
-                hydra_cfg=hydra_cfg,
-                questions=questions,
-                num_rounds=num_rounds,
-                num_agents=len(agent_models),
-                agent_models=agent_models,
-                summarize=original_config.get("summarize", True)
-            )
-            
-            if enhanced_metadata:
-                await store_wandb_metadata(debate_id, enhanced_metadata, hydra_cfg)
-        
-        logger.info(f"Waiting for human participant to connect...")
-        await _broadcast_debate_event(debate_id, "waiting_for_human_connection", {
-            "message": "Please connect to continue the replay"
-        })
 
-        try:
-            logger.info(f"Starting to consume from human_ready queue...")
-            logger.info(f"Queue details: {human_ready_queue.name}")
+        connection = await aio_pika.connect_robust(RABBITMQ_URL)
+        async with connection:
+            channel = await connection.channel()
             
-            # Create consumer with timeout
-            async def wait_for_ready_message():
-                """Consume messages until we get the ready signal."""
-                logger.info(f"Waiting for message on queue {human_ready_queue.name}")
-                
+            human_response_exchange = await channel.declare_exchange('human_responses', aio_pika.ExchangeType.DIRECT, durable=True)
+            human_response_queue = await channel.declare_queue(f'human_response_{debate_id}', durable=True, auto_delete=False)
+            await human_response_queue.bind(human_response_exchange, routing_key=debate_id)
+            
+            human_ready_queue = await channel.declare_queue(f'human_ready_{debate_id}', durable=True, auto_delete=False)
+            await human_ready_queue.bind(human_response_exchange, routing_key=f"{debate_id}_ready")
+            
+            try:
+                if orchestrator.status == "initialized":
+                    await orchestrator.initialize_from_hydra(
+                        debate_id=uuid.UUID(debate_id),
+                        hydra_cfg=hydra_cfg,
+                        questions=questions,
+                        num_rounds=num_rounds,
+                        num_agents=len(agent_models),
+                        agent_models=agent_models,
+                        summarize=original_config.get("summarize", True)
+                    )
+                    if enhanced_metadata:
+                        await store_wandb_metadata(debate_id, enhanced_metadata, hydra_cfg)
+
+                await _broadcast_debate_event(debate_id, "waiting_for_human_connection", {"message": "Please connect to continue"})
+
                 try:
                     async with human_ready_queue.iterator() as queue_iter:
                         async for message in queue_iter:
                             async with message.process():
-                                try:
-                                    logger.info(f"Received raw message body length: {len(message.body)}")
-                                    data = json.loads(message.body.decode())
-                                    logger.info(f"Parsed ready signal: {data}")
-                                    
-                                    # Accept any message as ready signal
-                                    # The presence of a message means frontend is ready
-                                    return True
-                                    
-                                except json.JSONDecodeError as e:
-                                    logger.warning(f"Received invalid ready signal: {e}")
-                                    # Even invalid JSON means frontend is trying to connect
-                                    return True
-                                except Exception as e:
-                                    logger.error(f"Error processing ready message: {e}")
-                                    continue
-                except Exception as e:
-                    logger.error(f"Error in queue iterator: {e}", exc_info=True)
-                    return False
-                return False
-            
-            try:
-                logger.info("Starting to wait for ready message with 600s timeout...")
-                ready = await asyncio.wait_for(wait_for_ready_message(), timeout=600)
-                
-                if ready:
-                    logger.info(f"Human participant connected for replay {debate_id}")
-                    logger.info(f"Proceeding with replay execution")
-                else:
-                    raise Exception("Failed to receive valid ready signal")
+                                break
+                except Exception:
+                    return None
+
+                for question_idx, q_data in enumerate(questions):
+                    q_text = q_data.get("question", "")
+                    q_prompt = q_data.get("question_prompt")
+                    ans = q_data.get("answer", "")
                     
-            except asyncio.TimeoutError:
-                logger.error(f"Timeout waiting for human connection after 600 seconds")
-                logger.error(f"Queue name: {human_ready_queue.name}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error waiting for human connection: {e}", exc_info=True)
-            raise
+                    q_session = await _create_question_and_session(debate_id, q_data, num_rounds, is_replay=True)
+                    orchestrator.current_question_session_id = q_session.id
+                    
+                    for agent in orchestrator.agents:
+                        if hasattr(agent, 'set_instruction'):
+                            agent.set_instruction(q_text)
 
-        # Continue execution
-        logger.info(f"Questions to process: {len(questions)}")
-        logger.info(f"Starting from round: {start_from_round}")
-        logger.info(f"Total rounds: {num_rounds}")
-        
-        for question_idx, question_data in enumerate(questions):
-            question_text = question_data.get("question", "")
-            question_prompt = question_data.get("question_prompt")
-            correct_answer = question_data.get("answer", "")
+                    replayed_responses = {}
+                    if previous_rounds and start_from_round >= 0:
+                        for idx in range(start_from_round):
+                            if idx < len(previous_rounds):
+                                p_resps = previous_rounds[idx].get('responses', {})
+                                for a_idx, agent in enumerate(orchestrator.agents):
+                                    resp = None
+                                    if a_idx == human_agent_index and replace_agent_name in p_resps:
+                                        resp = p_resps[replace_agent_name]
+                                    else:
+                                        base = agent.name.split('_agent_')[0]
+                                        num = int(agent.name.split('_agent_')[1]) if '_agent_' in agent.name else 0
+                                        norm = normalize_model_name(base)
+                                        for orig in p_resps:
+                                            o_base = orig.split('_agent_')[0]
+                                            o_num = int(orig.split('_agent_')[1]) if '_agent_' in orig else 0
+                                            if normalize_model_name(o_base) == norm and o_num == num:
+                                                resp = p_resps[orig]
+                                                break
+                                    if resp and hasattr(agent, 'answer_history'):
+                                        agent.answer_history.append(resp)
 
-            question_session = await _create_question_and_session(
-                debate_id, question_data, num_rounds
-            )
-            orchestrator.current_question_session_id = question_session.id
+                    for round_num in range(start_from_round, num_rounds):
+                        update_orchestrator_activity(debate_id)
+                        all_prev = {}
+                        for p_idx in range(round_num):
+                            rk = f"round_{p_idx}"
+                            if p_idx < start_from_round and previous_rounds:
+                                all_prev[rk] = previous_rounds[p_idx].get('responses', {})
+                            elif p_idx >= start_from_round and p_idx in replayed_responses:
+                                all_prev[rk] = replayed_responses[p_idx]
 
-            logger.info(f"Setting question for all agents: {question_text[:100]}...")
-            for agent in orchestrator.agents:
-                if hasattr(agent, 'set_instruction'):
-                    agent.set_instruction(question_text)
-                    logger.info(f"Set instruction for agent: {agent.name}")
-                else:
-                    logger.warning(f"Agent {agent.name} has no set_instruction method")
+                        round_res = await orchestrator._run_debate_round(
+                            question=q_text,
+                            question_prompt=q_prompt,
+                            round_number=round_num,
+                            skip_agent_index=human_agent_index
+                        )
 
-            replayed_rounds_responses = {}
-            
-            # Restore history for ALL agents based on start_from_round
-            if previous_rounds and start_from_round >= 0:
-                logger.info(f"Restoring agent history up to round {start_from_round}")
-                
-                # Restore history for rounds 0 to start_from_round-1
-                for prev_round_idx in range(start_from_round):
-                    if prev_round_idx < len(previous_rounds):
-                        prev_round_data = previous_rounds[prev_round_idx]
-                        prev_responses = prev_round_data.get('responses', {})
+                        curr_resps = round_res.responses.copy()
+                        await _broadcast_debate_event(debate_id, "waiting_for_human", {
+                            "question_index": question_idx,
+                            "round_number": round_num,
+                            "question_text": q_text,
+                            "previous_rounds": all_prev,
+                            "current_round_responses": curr_resps,
+                            "replace_agent_name": replace_agent_name,
+                        })
+
+                        human_resp_text = None
+                        human_ans_ext = None
                         
-                        logger.info(f"=== RESTORING ROUND {prev_round_idx} ===")
-                        logger.info(f"Available responses: {list(prev_responses.keys())}")
-                        logger.info(f"Number of agents to restore to: {len(orchestrator.agents)}")
-                        
-                        # Build map of original agent names
-                        original_agent_order = list(prev_responses.keys())
-                        logger.info(f"Original agent order: {original_agent_order}")
-                        
-                        # Track which original responses we've used
-                        used_original_responses = set()
-                        
-                        # Match each current agent to an original agent
-                        for agent_idx, agent in enumerate(orchestrator.agents):
-                            logger.info(f"Processing agent {agent_idx}: {agent.name}")
-                            agent_response = None
-                            matched_original_name = None
-                            
-                            if agent_idx == human_agent_index:
-                                # This is the human agent - find the ORIGINAL agent it replaced
-                                logger.info(f"Human agent at position {agent_idx}")
-                                logger.info(f"Looking for original agent: {replace_agent_name}")
-                                
-                                # The replace_agent_name should exactly match one of the original agents
-                                if replace_agent_name in prev_responses:
-                                    agent_response = prev_responses[replace_agent_name]
-                                    matched_original_name = replace_agent_name
-                                    used_original_responses.add(replace_agent_name)
-                                    logger.info(f"Found exact match: {replace_agent_name}")
-                                else:
-                                    # Try fuzzy matching if exact match fails
-                                    target_base = replace_agent_name.split('_agent_')[0] if '_agent_' in replace_agent_name else replace_agent_name
-                                    target_num = int(replace_agent_name.split('_agent_')[1]) if '_agent_' in replace_agent_name else 0
-                                    target_normalized = normalize_model_name(target_base)
-                                    
-                                    logger.info(f"Trying fuzzy match: base={target_base}, num={target_num}, normalized={target_normalized}")
-                                    
-                                    for orig_name in original_agent_order:
-                                        if orig_name in used_original_responses:
-                                            continue
-                                        
-                                        orig_base = orig_name.split('_agent_')[0] if '_agent_' in orig_name else orig_name
-                                        orig_num = int(orig_name.split('_agent_')[1]) if '_agent_' in orig_name else 0
-                                        orig_normalized = normalize_model_name(orig_base)
-                                        
-                                        logger.info(f"Comparing with {orig_name}: base={orig_base}, num={orig_num}, normalized={orig_normalized}")
-                                        
-                                        if orig_normalized == target_normalized and orig_num == target_num:
-                                            agent_response = prev_responses[orig_name]
-                                            matched_original_name = orig_name
-                                            used_original_responses.add(orig_name)
-                                            logger.info(f"Fuzzy matched to: {orig_name}")
-                                            break
-                                    
-                                    if not agent_response:
-                                        logger.error(f"Could not find original agent {replace_agent_name}")
-                            
-                            else:
-                                # Regular AI agent - match by model type and instance number
-                                curr_base = agent.name.split('_agent_')[0]
-                                curr_num = int(agent.name.split('_agent_')[1]) if '_agent_' in agent.name else 0
-                                curr_normalized = normalize_model_name(curr_base)
-                                
-                                logger.info(f"AI agent: base={curr_base}, num={curr_num}, normalized={curr_normalized}")
-                                
-                                # Find matching original agent
-                                for orig_name in original_agent_order:
-                                    if orig_name in used_original_responses:
-                                        continue
-                                    
-                                    orig_base = orig_name.split('_agent_')[0] if '_agent_' in orig_name else orig_name
-                                    orig_num = int(orig_name.split('_agent_')[1]) if '_agent_' in orig_name else 0
-                                    orig_normalized = normalize_model_name(orig_base)
-                                    
-                                    if orig_normalized == curr_normalized and orig_num == curr_num:
-                                        agent_response = prev_responses[orig_name]
-                                        matched_original_name = orig_name
-                                        used_original_responses.add(orig_name)
-                                        logger.info(f"Matched to: {orig_name}")
+                        try:
+                            async with human_response_queue.iterator() as q_iter:
+                                async for message in q_iter:
+                                    async with message.process():
+                                        data = json.loads(message.body.decode())
+                                        human_resp_text = data['response_text']
+                                        human_ans_ext = data.get('extracted_answer')
                                         break
-                                
-                                if not agent_response:
-                                    logger.warning(f"No match found for {agent.name}")
-                            
-                            # Add to agent history if found
-                            if agent_response:
-                                if hasattr(agent, 'answer_history'):
-                                    agent.answer_history.append(agent_response)
-                                    logger.info(f"Restored response to {agent.name}, history now: {len(agent.answer_history)}")
-                                    logger.info(f"Response preview: {agent_response[:100]}...")
-                                else:
-                                    logger.error(f"Agent {agent.name} missing answer_history!")
-                
-                if start_from_round > 0:
-                    logger.info(f"Restored {start_from_round} previous rounds. Final agent histories:")
-                else:
-                    logger.info(f"Starting from round 0 - no previous rounds to restore")
-                    logger.info(f"Initial agent histories:")
-                
-                for agent in orchestrator.agents:
-                    if hasattr(agent, 'answer_history'):
-                        logger.info(f"  {agent.name}: {len(agent.answer_history)} previous responses")
-                    else:
-                        logger.info(f"  {agent.name}: NO answer_history attribute")
-            
-            # Run rounds from start_from_round to num_rounds
-            for round_num in range(start_from_round, num_rounds):
-                update_orchestrator_activity(debate_id)
-                logger.info(f"Replaying round {round_num} for question {question_idx}")
+                        except Exception:
+                            raise TimeoutError("Failed to get human response")
+                        
+                        update_orchestrator_activity(debate_id)
+                        
+                        if orchestrator.human_agent_name:
+                            round_res.add_response(orchestrator.human_agent_name, human_resp_text)
+                            h_agent = orchestrator.agents[human_agent_index]
+                            if hasattr(h_agent, 'answer_history'):
+                                h_agent.answer_history.append(human_resp_text)
 
-                # Build context from BOTH original previous rounds AND replayed rounds
-                all_previous_rounds = {}
-                
-                logger.info(f"previous_rounds type: {type(previous_rounds)}, length: {len(previous_rounds) if previous_rounds else 0}")
-                logger.info(f"replayed_rounds_responses keys: {list(replayed_rounds_responses.keys())}")
-                
-                # Show all rounds that happened before the current round
-                for prev_round_idx in range(round_num):
-                    round_key = f"round_{prev_round_idx}"
-                    
-                    # Check if this round was from the original debate (before replay started)
-                    if prev_round_idx < start_from_round and previous_rounds and prev_round_idx < len(previous_rounds):
-                        # This is an ORIGINAL round - use data from previous_rounds
-                        prev_round_data = previous_rounds[prev_round_idx]
-                        prev_responses = prev_round_data.get('responses', {})
+                        replayed_responses[round_num] = round_res.responses.copy()
                         
-                        logger.info(f"Round {prev_round_idx} (ORIGINAL) has {len(prev_responses)} responses: {list(prev_responses.keys())}")
+                        await _broadcast_debate_event(debate_id, "round_replayed", {
+                            "question_index": question_idx,
+                            "round_number": round_num,
+                            "responses": round_res.responses
+                        })
                         
-                        all_previous_rounds[round_key] = prev_responses
-                        for agent_name, response in prev_responses.items():
-                            logger.info(f"  Showing round {prev_round_idx} (ORIGINAL) - {agent_name}: {response[:80]}...")
-                    
-                    elif prev_round_idx >= start_from_round and prev_round_idx in replayed_rounds_responses:
-                        # This is a REPLAYED round - use data from our replay session
-                        prev_responses = replayed_rounds_responses[prev_round_idx]
-                        
-                        logger.info(f"Round {prev_round_idx} (REPLAYED) has {len(prev_responses)} responses: {list(prev_responses.keys())}")
-                        
-                        all_previous_rounds[round_key] = prev_responses
-                        for agent_name, response in prev_responses.items():
-                            logger.info(f"  Showing round {prev_round_idx} (REPLAYED) - {agent_name}: {response[:80]}...")
-                    else:
-                        logger.warning(f"Round {prev_round_idx} not found in previous_rounds or replayed_rounds_responses")
-                
-                logger.info(f"Showing {len(all_previous_rounds)} previous rounds total")
-                logger.info(f"all_previous_rounds keys: {list(all_previous_rounds.keys())}")
+                        await orchestrator._store_round(
+                            round_data=round_res,
+                            correct_answer=ans,
+                            human_agent_index=human_agent_index,
+                            human_extracted_answer=human_ans_ext
+                        )
 
-                logger.info(f"=== STEP 1: AI agents responding in round {round_num} ===")
-                round_result = await orchestrator._run_debate_round(
-                    question=question_text,
-                    question_prompt=question_prompt,
-                    round_number=round_num,
-                    skip_agent_index=human_agent_index
-                )
+                    await orchestrator._complete_question_session()
+                await orchestrator._complete_debate()
                 
-                logger.info(f"AI agents completed round {round_num}")
-                logger.info(f"AI responses: {list(round_result.responses.keys())}")
+                await _broadcast_debate_event(debate_id, "debate_completed", {"debate_id": debate_id, "questions_processed": len(questions)})
+                remove_orchestrator(debate_id)
                 
-                logger.info(f"=== STEP 2: Waiting for human response in round {round_num} ===")
-                
-                replaced_agent_specific_name = None
-                
-                if replace_agent_name and "_agent_" in replace_agent_name:
-                    replaced_agent_specific_name = replace_agent_name
-                    logger.info(f"Using provided specific agent name: {replaced_agent_specific_name}")
-                else:
-                    first_round_responses = None
-                    
-                    if previous_rounds and len(previous_rounds) > 0:
-                        first_round_responses = previous_rounds[0].get('responses', {})
-                    elif start_from_round in replayed_rounds_responses:
-                        first_round_responses = replayed_rounds_responses[start_from_round]
-                    
-                    if first_round_responses and replace_agent_name:
-                        target_normalized = normalize_model_name(replace_agent_name)
-                        
-                        matching_agents = []
-                        for agent_name in first_round_responses.keys():
-                            agent_model = agent_name.split('_agent_')[0] if '_agent_' in agent_name else agent_name
-                            agent_normalized = normalize_model_name(agent_model)
-                            if agent_normalized == target_normalized:
-                                matching_agents.append(agent_name)
-                        
-                        logger.info(f"Found {len(matching_agents)} agents matching '{replace_agent_name}': {matching_agents}")
-                        
-                        if matching_agents:
-                            current_to_original = {}
-                            curr_idx = 0
-                            matching_agents_sorted = sorted(matching_agents)
-                            
-                            for orig_name in sorted(first_round_responses.keys()):
-                                orig_base = orig_name.split('_agent_')[0] if '_agent_' in orig_name else orig_name
-                                orig_normalized = normalize_model_name(orig_base)
-                                
-                                if curr_idx < len(agent_models):
-                                    curr_model = agent_models[curr_idx]
-                                    if curr_model == "human-participant":
-                                        current_to_original[curr_idx] = orig_name
-                                        curr_idx += 1
-                                        break
-                                    curr_idx += 1
-                            
-                            if human_agent_index in current_to_original:
-                                replaced_agent_specific_name = current_to_original[human_agent_index]
-                                logger.info(f"Mapped human_agent_index {human_agent_index} to original agent: {replaced_agent_specific_name}")
-                            elif matching_agents_sorted:
-                                replaced_agent_specific_name = matching_agents_sorted[0]
-                                logger.info(f"Fallback: using first matching agent: {replaced_agent_specific_name}")
+                return {"status": "replay_completed", "debate_id": debate_id}
 
-                current_round_responses = round_result.responses.copy()
-                
-                # Broadcast waiting_for_human event with CURRENT round's AI responses
-                await _broadcast_debate_event(debate_id, "waiting_for_human", {
-                    "question_index": question_idx,
-                    "round_number": round_num,
-                    "question_text": question_text,
-                    "previous_rounds": all_previous_rounds,
-                    "current_round_responses": current_round_responses,
-                    "replace_agent_name": replace_agent_name,
-                    "replaced_agent_specific_name": replaced_agent_specific_name
-                })
-                logger.info(f"Waiting for human response - round {round_num}")
-                
-                # Get human response
+            finally:
                 try:
-                    async def wait_for_human_response():
-                        """Consume messages until we get a valid response."""
-                        async with human_response_queue.iterator() as queue_iter:
-                            async for message in queue_iter:
-                                async with message.process():
-                                    try:
-                                        response_data = json.loads(message.body.decode())
-                                        return response_data
-                                    except json.JSONDecodeError:
-                                        logger.warning("Received invalid response message")
-                                        continue
-                        return None
-                    
-                    response_data = await asyncio.wait_for(
-                        wait_for_human_response(),
-                        timeout=300
-                    )
-                    
-                    if not response_data:
-                        raise Exception("Failed to receive valid human response")
-                    
-                    human_response = response_data['response_text']
-                    human_answer = response_data.get('extracted_answer')
-                    
-                    logger.info(f"Received human response: {human_response[:100]}...")
-                    logger.info(f"Extracted answer: {human_answer}")
-                    update_orchestrator_activity(debate_id)
-                    
-                    # Add human response to their history
-                    if orchestrator.human_agent_name:
-                        human_agent = orchestrator.agents[human_agent_index]
-                        logger.info(f"Human agent: {human_agent.name} at index {human_agent_index}")
-                        logger.info(f"Has answer_history: {hasattr(human_agent, 'answer_history')}")
-                        
-                        if hasattr(human_agent, 'answer_history'):
-                            logger.info(f"Current history length: {len(human_agent.answer_history)}")
-                            human_agent.answer_history.append(human_response)
-                            logger.info(f"Added human response to {human_agent.name} history")
-                            logger.info(f"New history length: {len(human_agent.answer_history)}")
-                            logger.info(f"Last entry preview: {human_agent.answer_history[-1][:100]}...")
-                        else:
-                            logger.error(f"Human agent {human_agent.name} missing answer_history attribute!")
-                            logger.error(f"Agent type: {type(human_agent)}")
-                            logger.error(f"Agent dir: {[attr for attr in dir(human_agent) if not attr.startswith('_')]}")
-                    else:
-                        logger.error(f"No human_agent_name set in orchestrator!")
-                    
-                    # Log all agent histories after human response
-                    logger.info("=== AGENT HISTORIES AFTER HUMAN RESPONSE ===")
-                    for i, agent in enumerate(orchestrator.agents):
-                        history_len = len(agent.answer_history) if hasattr(agent, 'answer_history') else 0
-                        logger.info(f"  Agent {i} ({agent.name}): {history_len} responses")
-                        if history_len > 0:
-                            logger.info(f"    Last: {agent.answer_history[-1][:80]}...")
-                    
-                except asyncio.TimeoutError:
-                    logger.warning("Timeout waiting for human response — ending task gracefully")
-                    return {"status": "timeout", "message": "No human response received within 5 minutes"}
+                    if human_response_queue: await human_response_queue.delete(if_unused=False, if_empty=False)
+                    if human_ready_queue: await human_ready_queue.delete(if_unused=False, if_empty=False)
+                except Exception as e:
+                    logger.error(f"Error cleaning up queues: {e}")
 
-                if orchestrator.human_agent_name:
-                    round_result.add_response(orchestrator.human_agent_name, human_response)
-                    logger.info(f"Added human response to round result")
-                
-                replayed_rounds_responses[round_num] = round_result.responses.copy()
-                logger.info(f"Stored round {round_num} complete responses: {list(round_result.responses.keys())}")
-
-                await _broadcast_debate_event(debate_id, "round_replayed", {
-                    "question_index": question_idx,
-                    "round_number": round_num,
-                    "responses": round_result.responses
-                })
-                
-                # Store the round
-                await orchestrator._store_round(
-                    round_data=round_result,
-                    correct_answer=correct_answer,
-                    human_agent_index=human_agent_index,
-                    human_extracted_answer=human_answer
-                )
-                
-                logger.info(f"Round {round_num} complete and stored")
-
-            # Complete question session after all rounds for this question
-            await orchestrator._complete_question_session()
-
-        # Complete debate after all questions processed
-        await orchestrator._complete_debate()
-
-        await _broadcast_debate_event(debate_id, "debate_completed", {
-            "debate_id": debate_id,
-            "questions_processed": len(questions)
-        })
-
-        remove_orchestrator(debate_id)
-
-        return {
-            "status": "replay_completed",
-            "debate_id": debate_id,
-            "questions_processed": len(questions),
-            "rounds_replayed": num_rounds - start_from_round
-        }
-        
     except Exception as e:
-        logger.error(f"Error in replay execution: {e}", exc_info=True)
-        await _broadcast_debate_event(debate_id, "debate_error", {
-            "error": str(e),
-            "error_type": type(e).__name__
-        })
+        await _broadcast_debate_event(debate_id, "debate_error", {"error": str(e)})
         remove_orchestrator(debate_id)
         raise
-    
-    finally:
-        # Cleanup RabbitMQ resources
-        try:
-            if human_response_queue:
-                await human_response_queue.delete()
-        except Exception as e:
-            logger.warning(f"Failed to delete response queue: {e}")
-        
-        try:
-            if human_ready_queue:
-                await human_ready_queue.delete()
-        except Exception as e:
-            logger.warning(f"Failed to delete ready queue: {e}")
-        
-        try:
-            if channel and not channel.is_closed:
-                await channel.close()
-        except Exception as e:
-            logger.warning(f"Failed to close channel: {e}")
-        
-        try:
-            if connection and not connection.is_closed:
-                await connection.close()
-        except Exception as e:
-            logger.warning(f"Failed to close connection: {e}")
 
-def _build_hydra_config_for_replay_simple(
-    original_config: dict,
-    agent_models: list,
-    num_rounds: int,
-    experiment_name: str
-) -> dict:
-    """Build Hydra config directly from agent_models list."""
-    from pathlib import Path
-    from hydra import compose, initialize_config_dir
-    from omegaconf import OmegaConf
-    
+def _build_hydra_config_for_replay_simple(original_config, agent_models, num_rounds, experiment_name):
     task = original_config.get("task", "gsm8k")
     seed = original_config.get("seed", 0)
+    unique = list(set([m for m in agent_models if normalize_model_name(m) != 'human-participant']))
     
-    unique_models = []
-    for model in agent_models:
-        normalized = normalize_model_name(model)
-        if normalized != 'human-participant':
-            if not any(normalize_model_name(m) == normalized for m in unique_models):
-                unique_models.append(model)
-    
-    logger.info(f"Unique models for config: {unique_models}")
-    
-    # Build overrides
-    config_dir = str(Path(__file__).parent.parent / "conf")
     overrides = [
         f"+task={task}",
         f"+experiment.num_questions=1",
@@ -843,685 +306,247 @@ def _build_hydra_config_for_replay_simple(
         f"++seed={seed}",
     ]
     
-    for idx, model_name in enumerate(unique_models[:3]):
-        llm_key = f"llm{idx + 1}"
-        config_name = api_format_to_config_name(model_name)
-        overrides.append(f"+llm_conf@{llm_key}={config_name}")
-        logger.info(f"Added override: +llm_conf@{llm_key}={config_name}")
+    for idx, m in enumerate(unique[:3]):
+        overrides.append(f"+llm_conf@llm{idx+1}={api_format_to_config_name(m)}")
     
+    config_dir = str(Path(__file__).parent.parent / "conf")
     with initialize_config_dir(config_dir=config_dir, version_base="1.1"):
         hydra_cfg = compose(config_name="config", overrides=overrides)
         OmegaConf.resolve(hydra_cfg)
-    
     return OmegaConf.to_container(hydra_cfg, resolve=True)
 
 def normalize_model_name(name: str) -> str:
-    """Normalize model name for comparison."""
-    normalized = name.lower()    
-    normalized = normalized.replace('_', '-').replace('/', '-').replace('.', '-')    
-    for prefix in ['vec-', 'together-']:
-        if normalized.startswith(prefix):
-            normalized = normalized[len(prefix):]    
-    for suffix in ['-chat', '-instruct', '-turbo']:
-        if normalized.endswith(suffix):
-            normalized = normalized[:-len(suffix)]
-    
-    return normalized.strip('-')
+    norm = name.lower().replace('_', '-').replace('/', '-').replace('.', '-')
+    for p in ['vec-', 'together-']:
+        if norm.startswith(p): norm = norm[len(p):]
+    for s in ['-chat', '-instruct', '-turbo']:
+        if norm.endswith(s): norm = norm[:-len(s)]
+    return norm.strip('-')
 
 def get_config_name_from_model(model_config: dict) -> str:
-    """
-    Extract the correct Hydra config name from a model config object.
-    Maps API model names to actual YAML config file names.
-    """
-    model_name = model_config.get("modelName") or model_config.get("model", "")
-    api_base = model_config.get("apiBase")    
-    normalized = model_name.lower().replace("-", "_").replace(".", "_")    
-    if api_base and api_base not in ["https://api.openai.com/v1", None]:
-        if "llama" in normalized and "3" in normalized and "8b" in normalized:
-            return "vec_llama_3_1_8B"
-        elif "mistral" in normalized and "7b" in normalized:
-            return "vec_mistral_7B"
-    
-    # Standard OpenAI models
-    if "gpt_4o_mini" in normalized or "gpt_4o_mini" in normalized:
-        return "gpt_4o_mini"
-    elif "gpt_3_5_turbo" in normalized:
-        return "gpt_3_5_turbo"
-    
-    # Llama models
-    if "llama" in normalized and "3" in normalized and "8b" in normalized:
-        if normalized.startswith("vec_") or api_base:
-            return "vec_llama_3_1_8B"
-        return "llama_3_1_8B"
-    
-    # Mistral models
-    if "mistral" in normalized and "7b" in normalized:
-        if normalized.startswith("vec_") or api_base:
-            return "vec_mistral_7B"
-        return "mistral_7B"
-    
-    # Human participant
-    if "human" in normalized:
-        return "human-participant"
-    
-    logger.warning(f"Could not map model config to known config name: {model_config}")
-    return normalized
+    name = (model_config.get("modelName") or model_config.get("model", "")).lower().replace("-", "_").replace(".", "_")
+    if "human" in name: return "human-participant"
+    if "llama" in name and "3" in name and "8b" in name: return "vec_llama_3_1_8B" if "vec" in name else "llama_3_1_8B"
+    if "mistral" in name and "7b" in name: return "vec_mistral_7B" if "vec" in name else "mistral_7B"
+    if "gpt_4o_mini" in name: return "gpt_4o_mini"
+    if "gpt_3_5_turbo" in name: return "gpt_3_5_turbo"
+    return name
 
-def config_name_to_api_format(config_name: str) -> str:
-    """
-    Convert config file name to API format.
-    """
-    if not config_name or config_name == 'human-participant':
-        return config_name    
-    if config_name.startswith('gpt_'):
-        parts = config_name.split('_')
-        if len(parts) == 4:
-            return f"{parts[0]}-{parts[1]}.{parts[2]}-{parts[3]}"
-        elif len(parts) == 3:
-            return f"{parts[0]}-{parts[1]}-{parts[2]}"    
-    return config_name.replace('_', '-')
-
-def api_format_to_config_name(api_name: str) -> str:
-    """
-    Convert API format to config file name.
-    """
-    if not api_name or api_name == 'human-participant':
-        return api_name    
-    return api_name.replace('-', '_').replace('.', '_')
+def api_format_to_config_name(name: str) -> str:
+    if not name or name == 'human-participant': return name
+    return name.replace('-', '_').replace('.', '_')
 
 def _find_agent_index_by_name(agent_models: list, agent_name: str) -> int:
-    """Find agent index by normalized name matching."""
-    replace_name_normalized = normalize_model_name(agent_name)
-    logger.info(f"Looking for agent: '{agent_name}' (normalized: '{replace_name_normalized}')")
-    
-    for idx, model_name in enumerate(agent_models):
-        model_normalized = normalize_model_name(model_name)
-        
-        if model_normalized == replace_name_normalized:
-            logger.info(f"Found agent '{model_name}' at index {idx}")
-            return idx
-    
+    target = normalize_model_name(agent_name)
+    for i, m in enumerate(agent_models):
+        if normalize_model_name(m) == target: return i
     return None
 
-def _validate_replay_config(original_config: dict, start_from_round: int) -> None:
-    """Validate that we have enough information to replay."""
-    errors = []
-    
-    if not original_config:
-        errors.append("original_config is empty")
-    
-    # Check for llm_conf OR metadata
-    has_llm_conf = bool(original_config.get("llm_conf"))
-    has_metadata = bool(original_config.get("wandb_metadata"))
-    
-    if not has_llm_conf and not has_metadata:
-        errors.append("No llm_conf or wandb_metadata found")
-    
-    # Check for agent counts
-    has_agent_counts = bool(original_config.get("agent_counts"))
-    has_metadata_counts = has_metadata and bool(
-        original_config.get("wandb_metadata", {}).get("parsed_args", {})
-    )
-    
-    if not has_agent_counts and not has_metadata_counts:
-        errors.append("No agent_counts or metadata to derive counts from")
-    
-    # Check round validity
-    num_rounds = original_config.get("num_rounds", 0)
-    if start_from_round >= num_rounds:
-        errors.append(f"start_from_round ({start_from_round}) >= num_rounds ({num_rounds})")
-    
-    if errors:
-        error_msg = "Replay validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-    
-    logger.info("Replay config validation passed")
+def _validate_replay_config(cfg: dict, start_round: int):
+    if not cfg: raise ValueError("Config empty")
+    if start_round >= cfg.get("num_rounds", 0): raise ValueError("Start round >= num rounds")
 
 async def _run_debate_async(debate_id: str, config_dict: dict) -> Dict[str, Any]:
-    """
-    Async function that handles the actual debate execution.
-    """
-    orchestrator = get_or_create_orchestrator(debate_id)    
-    rabbitmq_url = os.getenv("CELERY_BROKER_URL", "amqp://guest:guest@localhost:5672/")
-    connection = None
-    channel = None
-    human_response_queue = None
-    human_ready_queue = None
+    orchestrator = get_or_create_orchestrator(debate_id)
+    questions = config_dict.get('questions', [])
+    agent_models = config_dict.get('agent_models', [])
+    human_idx = config_dict.get('human_agent_index')
     
-    try:
-        questions = config_dict.get('questions', [])
-        num_rounds = config_dict.get('num_rounds', 3)
-        num_agents = config_dict.get('num_agents', 1)
-        agent_models = config_dict.get('agent_models', [])
-        human_agent_index = config_dict.get('human_agent_index')
-        enhanced_metadata = config_dict.get('enhanced_metadata')
-        
-        if human_agent_index is None and agent_models:
-            for idx, model in enumerate(agent_models):
-                if model.lower() in ['human-participant', 'human', 'mock/human']:
-                    human_agent_index = idx
-                    logger.info(f"Detected human agent at index {idx}")
-                    break
-        
-        logger.info(f"Questions: {len(questions)}, Rounds: {num_rounds}, Agents: {num_agents}")
-        logger.info(f"Agent models order: {agent_models}")
-        logger.info(f"Human agent index: {human_agent_index}")
-        
-        if human_agent_index is not None:
-            connection = await aio_pika.connect_robust(rabbitmq_url)
-            channel = await connection.channel()
-            
-            human_response_exchange = await channel.declare_exchange(
-                'human_responses',
-                aio_pika.ExchangeType.DIRECT,
-                durable=True
-            )
-            
-            human_response_queue = await channel.declare_queue(
-                f'human_response_{debate_id}',
-                durable=True,
-                auto_delete=False,
-                exclusive=False
-            )
-            await human_response_queue.bind(human_response_exchange, routing_key=debate_id)
-            
-            human_ready_queue = await channel.declare_queue(
-                f'human_ready_{debate_id}',
-                durable=True,
-                auto_delete=False,
-                exclusive=False
-            )
-            await human_ready_queue.bind(human_response_exchange, routing_key=f"{debate_id}_ready")
-            
-            logger.info(f"Setup RabbitMQ queues for debate {debate_id}")
-            logger.info(f"Waiting for human participant to connect...")
-            await _broadcast_debate_event(debate_id, "waiting_for_human_connection", {
-                "message": "Please connect to continue the debate"
-            })
-            
-            try:
-                async with human_ready_queue.iterator() as queue_iter:
-                    async def get_ready_signal():
-                        async for message in queue_iter:
-                            return message
-                    
-                    message = await asyncio.wait_for(
-                        get_ready_signal(),
-                        timeout=600
-                    )
-                    
-                    async with message.process():
-                        logger.info(f"Human participant connected for debate {debate_id}")
-                        
-            except asyncio.TimeoutError:
-                logger.error(f"Timeout waiting for human connection in debate {debate_id}")
-                raise Exception("Human participant did not connect within 60 seconds")
-                
-        else:
-            logger.info(f"No human agent - skipping RabbitMQ setup")
-        
-        if orchestrator.status == "initialized":
-            await orchestrator.initialize_from_hydra(
-                debate_id=uuid.UUID(debate_id),
-                hydra_cfg=config_dict,
-                questions=questions,
-                num_rounds=num_rounds,
-                num_agents=num_agents,
-                agent_models=agent_models,
-                summarize=config_dict.get('summarize', True)
-            )
-            
-            if enhanced_metadata:
-                hydra_cfg = config_dict.get('hydra_cfg') or config_dict
-                await store_wandb_metadata(debate_id, enhanced_metadata, hydra_cfg)
-            
-            await _broadcast_debate_event(debate_id, "debate_started", {
-                "debate_id": debate_id,
-                "num_questions": len(questions),
-                "num_rounds": num_rounds,
-                "num_agents": num_agents,
-                "agent_models": agent_models,
-                "human_agent_index": human_agent_index
-            })
-        
-        for question_idx, question_data in enumerate(questions):
-            logger.info(f"Processing question {question_idx + 1}/{len(questions)}")
-            
-            question_text = question_data.get('question', '')
-            correct_answer = question_data.get('answer', '')
-            question_prompt = question_data.get('question_prompt')
-            
-            if not isinstance(question_text, str):
-                question_text = str(question_text)
-            if not isinstance(correct_answer, str):
-                correct_answer = str(correct_answer)
+    if human_idx is None and agent_models:
+        for i, m in enumerate(agent_models):
+            if m.lower() in ['human-participant', 'human', 'mock/human']:
+                human_idx = i
+                break
 
-            actual_question = question_prompt or question_text
-            logger.info(f"Question: {actual_question[:200]}")
-            logger.info(f"Correct answer: {correct_answer}")
+    connection = await aio_pika.connect_robust(RABBITMQ_URL)
+    
+    async with connection:
+        channel = await connection.channel()
+        h_resp_q = None
+        h_ready_q = None
 
-            question_session = await _create_question_and_session(
-                debate_id, question_data, num_rounds, is_replay=True
-            )
+        try:
+            if human_idx is not None:
+                exc = await channel.declare_exchange('human_responses', aio_pika.ExchangeType.DIRECT, durable=True)
+                h_resp_q = await channel.declare_queue(f'human_response_{debate_id}', durable=True, auto_delete=False)
+                await h_resp_q.bind(exc, routing_key=debate_id)
+                h_ready_q = await channel.declare_queue(f'human_ready_{debate_id}', durable=True, auto_delete=False)
+                await h_ready_q.bind(exc, routing_key=f"{debate_id}_ready")
+                
+                await _broadcast_debate_event(debate_id, "waiting_for_human_connection", {"message": "Connect"})
+                
+                try:
+                    async with h_ready_q.iterator() as iter:
+                        async for msg in iter:
+                            async with msg.process(): break
+                except Exception:
+                    raise Exception("Human connect timeout")
             
-            orchestrator.current_question_session_id = question_session.id
-            
-            await _broadcast_debate_event(debate_id, "question_started", {
-                "question_index": question_idx,
-                "question_text": question_text,
-                "question_session_id": str(question_session.id)
-            })
-            
-            for agent in orchestrator.agents:
-                await agent.reset()
-                agent.set_instruction(actual_question)
-            
-            human_answer = None
-            
-            for round_num in range(num_rounds):
-                update_orchestrator_activity(debate_id)
-                
-                await _broadcast_debate_event(debate_id, "round_started", {
-                    "round_number": round_num,
-                    "question_index": question_idx
-                })
-                
-                logger.info(f"=== STARTING ROUND {round_num} ===")
-                
-                class RoundResult:
-                    def __init__(self, round_number):
-                        self.responses = {}
-                        self.round_number = round_number
-                    
-                    def add_response(self, name, text):
-                        self.responses[name] = text
-                
-                round_result = RoundResult(round_num)
-                
-                if human_agent_index is not None and orchestrator.human_agent_name:
-                    previous_responses = {}
-                    if round_num > 0:
-                        for agent in orchestrator.agents:
-                            if hasattr(agent, 'answer_history') and len(agent.answer_history) > 0:
-                                agent_name = agent.name
-                                if agent_name != orchestrator.human_agent_name:
-                                    previous_responses[agent_name] = agent.answer_history[-1]
-                        logger.info(f"Showing {len(previous_responses)} previous AI responses to human")
-                    
-                    await _broadcast_debate_event(debate_id, "waiting_for_human", {
-                        "question_index": question_idx,
-                        "round_number": round_num,
-                        "question_text": question_text,
-                        "other_responses": previous_responses,
-                    })
-
-                    logger.info(f"Waiting for human response - debate {debate_id}, round {round_num}")
-                    
-                    try:
-                        received = False
-                        timeout = 300
-                        
-                        async with human_response_queue.iterator() as queue_iter:
-                            async def get_message_with_timeout():
-                                async for message in queue_iter:
-                                    return message
-                                raise TimeoutError("No message received")
-                            
-                            message = await asyncio.wait_for(
-                                get_message_with_timeout(),
-                                timeout=timeout
-                            )
-                            
-                            async with message.process():
-                                response_data = json.loads(message.body.decode())
-                                human_response = response_data['response_text']
-                                human_answer_extracted = response_data['extracted_answer']
-                                
-                                logger.info(f"Received human response from RabbitMQ")
-                                logger.info(f"Response: {human_response[:100]}...")
-                                logger.info(f"Extracted answer: {human_answer_extracted}")
-                                
-                                human_answer = human_answer_extracted
-                                
-                                round_result.add_response(orchestrator.human_agent_name, human_response)
-                                
-                                human_agent = orchestrator.agents[human_agent_index]
-                                if hasattr(human_agent, 'answer_history'):
-                                    human_agent.answer_history.append(human_response)
-                                    logger.info(f"Added human response to agent's answer_history")
-                                
-                                update_orchestrator_activity(debate_id)
-                                received = True
-                        
-                        if not received:
-                            raise TimeoutError("No human response received")
-                        
-                    except asyncio.TimeoutError:
-                        logger.error(f"Timeout waiting for human response in debate {debate_id}")
-                    
-                    logger.info(f"Calling _run_debate_round for round {round_num}")
-                    logger.info(f"Question: {question_text[:100]}")
-                    logger.info(f"Skip agent index: {human_agent_index}")
-                    logger.info(f"Orchestrator agents: {[a.name for a in orchestrator.agents]}")
-
-                    try:
-                        ai_round_result = await orchestrator._run_debate_round(
-                            question=question_text,
-                            question_prompt=question_prompt,
-                            round_number=round_num,
-                            skip_agent_index=human_agent_index
-                        )
-                        logger.info(f"_run_debate_round completed")
-                    except Exception as e:
-                        logger.error(f"_run_debate_round failed: {e}", exc_info=True)
-                        raise
-                    for agent_name, response_text in ai_round_result.responses.items():
-                        round_result.add_response(agent_name, response_text)
-                    
-                    logger.info(f"Broadcasting AI agent responses to human")
-                    await _broadcast_debate_event(debate_id, "ai_responses_ready", {
-                        "round_number": round_num,
-                        "question_index": question_idx,
-                        "ai_responses": {k: v for k, v in round_result.responses.items() 
-                                        if k != orchestrator.human_agent_name}
-                    })
-                    
-                else:
-                    round_result = await orchestrator._run_debate_round(
-                        question=question_text,
-                        question_prompt=question_prompt,
-                        round_number=round_num,
-                        skip_agent_index=None
-                    )
-                
-                logger.info(f"=== ROUND {round_num} COMPLETE ===")
-                logger.info(f"Collected responses from: {list(round_result.responses.keys())}")
-                
-                await orchestrator._store_round(
-                    round_data=round_result,
-                    correct_answer=correct_answer,
-                    human_agent_index=human_agent_index,
-                    human_extracted_answer=human_answer if human_agent_index is not None else None
+            if orchestrator.status == "initialized":
+                await orchestrator.initialize_from_hydra(
+                    debate_id=uuid.UUID(debate_id),
+                    hydra_cfg=config_dict,
+                    questions=questions,
+                    num_rounds=config_dict.get('num_rounds', 3),
+                    num_agents=config_dict.get('num_agents', 1),
+                    agent_models=agent_models,
+                    summarize=config_dict.get('summarize', True)
                 )
+                if config_dict.get('enhanced_metadata'):
+                    await store_wandb_metadata(debate_id, config_dict['enhanced_metadata'], config_dict)
                 
-                await _broadcast_debate_event(debate_id, "round_completed", {
-                    "round_number": round_num,
-                    "question_index": question_idx,
-                    "responses": round_result.responses
+                await _broadcast_debate_event(debate_id, "debate_started", {
+                    "debate_id": debate_id, "num_questions": len(questions)
                 })
-            
-            await orchestrator._complete_question_session()
-            
-            await _broadcast_debate_event(debate_id, "question_completed", {
-                "question_index": question_idx
-            })
-        
-        await orchestrator._complete_debate()
-        
-        await _broadcast_debate_event(debate_id, "debate_completed", {
-            "debate_id": debate_id,
-            "questions_processed": len(questions)
-        })
-        
-        remove_orchestrator(debate_id)
-        
-        return {
-            "status": "completed",
-            "debate_id": debate_id,
-            "questions_processed": len(questions)
-        }
-        
-    except Exception as e:
-        logger.error(f"Error in debate execution: {e}", exc_info=True)
-        
-        await _broadcast_debate_event(debate_id, "debate_error", {
-            "error": str(e),
-            "error_type": type(e).__name__
-        })
-        
-        remove_orchestrator(debate_id)
-        raise
-    
-    finally:
-        try:
-            if human_response_queue:
-                await human_response_queue.delete()
-                logger.info(f"Deleted RabbitMQ queue for debate {debate_id}")
-        except Exception as e:
-            logger.warning(f"Failed to delete queue: {e}")
-        
-        try:
-            if channel and not channel.is_closed:
-                await channel.close()
-        except Exception as e:
-            logger.warning(f"Failed to close channel: {e}")
-        
-        try:
-            if connection and not connection.is_closed:
-                await connection.close()
-        except Exception as e:
-            logger.warning(f"Failed to close connection: {e}")
 
-async def _create_question_and_session(
-    debate_id: str,
-    question_data: Dict[str, Any],
-    num_rounds: int,
-    is_replay: bool = False
-):
-    """Create question and question session in database."""
+            for q_idx, q_data in enumerate(questions):
+                q_text = str(q_data.get('question', ''))
+                ans = str(q_data.get('answer', ''))
+                q_sess = await _create_question_and_session(debate_id, q_data, config_dict.get('num_rounds', 3))
+                orchestrator.current_question_session_id = q_sess.id
+                
+                await _broadcast_debate_event(debate_id, "question_started", {"question_index": q_idx, "question_text": q_text})
+                
+                for agent in orchestrator.agents:
+                    await agent.reset()
+                    agent.set_instruction(q_data.get('question_prompt') or q_text)
+                
+                for r_num in range(config_dict.get('num_rounds', 3)):
+                    update_orchestrator_activity(debate_id)
+                    await _broadcast_debate_event(debate_id, "round_started", {"round_number": r_num})
+                    
+                    # Initialize variables to prevent UnboundLocalError
+                    res = None
+                    h_resp, h_ext = None, None
+
+                    all_previous_rounds = {}
+                    for past_r_idx in range(r_num):
+                        round_key = f"round_{past_r_idx}"
+                        round_data = {}
+                        for agent in orchestrator.agents:
+                            if hasattr(agent, 'answer_history') and len(agent.answer_history) > past_r_idx:
+                                round_data[agent.name] = agent.answer_history[past_r_idx]
+                        all_previous_rounds[round_key] = round_data
+
+                    if human_idx is not None:
+                        await _broadcast_debate_event(debate_id, "waiting_for_human", {
+                            "question_index": q_idx,
+                            "round_number": r_num,
+                            "question_text": q_text,
+                            "previous_rounds": all_previous_rounds,
+                            "current_round_index": r_num 
+                        })
+                        
+                        try:
+                            async with h_resp_q.iterator() as iter:
+                                async for msg in iter:
+                                    async with msg.process():
+                                        data = json.loads(msg.body.decode())
+                                        h_resp = data['response_text']
+                                        h_ext = data.get('extracted_answer')
+                                        orchestrator.agents[human_idx].answer_history.append(h_resp)
+                                        break
+                        except Exception:
+                            raise TimeoutError("Human response timeout")
+                        
+                        res = await orchestrator._run_debate_round(q_text, None, r_num, human_idx)
+                        await _broadcast_debate_event(debate_id, "ai_responses_ready", {
+                            "round_number": r_num, 
+                            "ai_responses": {
+                                k: v for k, v in res.responses.items() 
+                                if k != orchestrator.human_agent_name
+                            }
+                        })
+                        res.add_response(orchestrator.human_agent_name, h_resp)
+                    else:
+                        res = await orchestrator._run_debate_round(q_text, None, r_num)
+                        h_resp, h_ext = None, None
+
+                    if res is not None:
+                        await orchestrator._store_round(res, ans, human_idx, h_ext)
+                        await _broadcast_debate_event(debate_id, "round_completed", {"round_number": r_num, "responses": res.responses})
+                
+                await orchestrator._complete_question_session()
+                await _broadcast_debate_event(debate_id, "question_completed", {"question_index": q_idx})
+            
+            await orchestrator._complete_debate()
+            await _broadcast_debate_event(debate_id, "debate_completed", {"debate_id": debate_id})
+            remove_orchestrator(debate_id)
+            return {"status": "completed", "debate_id": debate_id}
+
+        except Exception as e:
+            await _broadcast_debate_event(debate_id, "debate_error", {"error": str(e)})
+            remove_orchestrator(debate_id)
+            raise
+        finally:
+            try:
+                if h_resp_q: await h_resp_q.delete(if_unused=False, if_empty=False)
+                if h_ready_q: await h_ready_q.delete(if_unused=False, if_empty=False)
+            except Exception as e:
+                logger.error(f"Error deleting queues: {e}")
+
+async def _create_question_and_session(debate_id, q_data, num_rounds, is_replay=False):
     import hashlib
+    q_text = str(q_data.get('question', ''))
+    ans = str(q_data.get('answer', ''))
+    suffix = f"_replay_{time.time()}" if is_replay else ""
+    qid = int(hashlib.sha256(f"{debate_id}_{q_text}_{ans}{suffix}".encode()).hexdigest()[:8], 16) % 2147483647
     
-    question_text = question_data.get('question', '')
-    correct_answer = question_data.get('answer', '')
-    question_prompt = question_data.get('question_prompt')
-    
-    # For replays, add a timestamp to ensure unique question session
-    unique_suffix = f"_replay_{time.time()}" if is_replay else ""
-    unique_str = f"{debate_id}_{question_text}_{correct_answer}{unique_suffix}"
-    hash_value = int(hashlib.sha256(unique_str.encode()).hexdigest()[:8], 16)
-    question_id = hash_value % 2147483647
-    
-    logger.info(f"Creating new question with ID: {question_id}")
-    
-    db_manager = DatabaseManager()
-    async with db_manager.get_session() as session:
-        repo = DebateRepository(session)
-        
-        logger.info(f"get_or_create_question called with question_id={question_id}")
-        question_obj = await repo.get_or_create_question(
-            question_id=question_id,
-            question_text=question_text,
-            correct_answer=str(correct_answer),
-            question_prompt=question_prompt
-        )
-        
-        await session.commit()
-        await session.refresh(question_obj)
-        
-        logger.info(f"Created question: ID={question_obj.id}")
-        
-        logger.info(f"Creating question session for question ID: {question_obj.id}")
-        question_session = await repo.create_question_session(
-            debate_id=uuid.UUID(debate_id),
-            question_id=question_obj.id,
-            total_rounds=num_rounds
-        )
-        
-        await session.commit()
-        await session.refresh(question_session)
-        
-        logger.info(f"Question session created: ID={question_session.id}")
-        
-        return question_session
+    db = DatabaseManager()
+    async with db.get_session() as s:
+        r = DebateRepository(s)
+        q = await r.get_or_create_question(qid, q_text, ans, q_data.get('question_prompt'))
+        await s.commit()
+        qs = await r.create_question_session(uuid.UUID(debate_id), q.id, num_rounds)
+        await s.commit()
+        return qs
 
-
-async def _broadcast_debate_event(debate_id: str, event_type: str, data: Dict[str, Any]):
-    """Broadcast debate event via WebSocket or other mechanism."""
+async def _broadcast_debate_event(debate_id, etype, data):
     try:
-        logger.info(f"Broadcasting {event_type} for debate {debate_id}")
-        logger.info(f"Event data: {data}")
-        
-        from src.api.websocket_manager import broadcast_to_debate
-        await broadcast_to_debate(debate_id, {
-            "type": event_type,
-            "timestamp": time.time(),
-            "data": data,
-            "debate_id": debate_id
-        })
-        
-        logger.info(f"Successfully broadcasted {event_type} to debate {debate_id}")
-        
-    except Exception as e:
-        logger.error(f"Failed to broadcast event {event_type}: {e}", exc_info=True)
+        connection = await aio_pika.connect_robust(RABBITMQ_URL)
+        async with connection:
+            ch = await connection.channel()
+            ex = await ch.declare_exchange('debate_events', aio_pika.ExchangeType.TOPIC, durable=False)
+            msg = aio_pika.Message(json.dumps({"type": etype, "timestamp": time.time(), "data": data, "debate_id": debate_id}).encode())
+            await ex.publish(msg, routing_key=f'debate.events.{debate_id}')
+    except Exception: pass
 
-
-async def store_wandb_metadata(debate_id: str, enhanced_metadata: dict, hydra_cfg: dict):
-    """
-    Store enhanced wandb metadata in the database.
-    This is a shared function used by both tasks.py and basic_debate.py.
-    Now properly tracks human participants as llm configs.
-    """
+async def store_wandb_metadata(debate_id, meta, cfg):
     try:
-        llm_configs = enhanced_metadata.get("llm_configs", {})
-        agent_models = enhanced_metadata.get("agent_models", [])
-        
-        logger.info(f"Processing {len(agent_models)} agents: {agent_models}")
-        
-        parsed_args = {
-            "seed": str(hydra_cfg.get("seed", enhanced_metadata.get("seed", 0))),
-            "task": enhanced_metadata.get("task", "unknown"),
-            "has_custom_questions": enhanced_metadata.get("has_custom_questions", False),
-            "debug": False,
-            "cost_check": False,
-            "experiment.name": hydra_cfg.get("experiment", {}).get("name", enhanced_metadata.get("debate_type", "unnamed")),
-            "experiment.num_rounds": enhanced_metadata.get("num_rounds", 2),
-            "experiment.num_questions": enhanced_metadata.get("num_questions", 1),
-            "total_agents": len(agent_models),
-        }
-        
-        model_counts = {}
-        for model in agent_models:
-            if model.lower() in ['human-participant', 'human', 'mock/human']:
-                normalized = "human-participant"
-            else:
-                normalized = model
-            if normalized not in model_counts:
-                model_counts[normalized] = 0
-            model_counts[normalized] += 1
-        
-        llm_idx = 0
-        for model_name, count in model_counts.items():
-            llm_idx += 1
-            if llm_idx <= 3:
-                llm_key = f"llm{llm_idx}"
-                parsed_args[f"llm_conf@{llm_key}"] = model_name
-                parsed_args[f"agent_counts.{llm_idx-1}"] = count
-        
-        if llm_configs.get("llm1"):
-            parsed_args["llm_conf@llm1"] = llm_configs["llm1"]["model"]
-            parsed_args["agent_counts.0"] = llm_configs["llm1"]["count"]
-        
-        if llm_configs.get("llm2") and llm_configs["llm2"]:
-            parsed_args["llm_conf@llm2"] = llm_configs["llm2"]["model"]
-            parsed_args["agent_counts.1"] = llm_configs["llm2"]["count"]
-        
-        if llm_configs.get("llm3") and llm_configs["llm3"]:
-            parsed_args["llm_conf@llm3"] = llm_configs["llm3"]["model"]
-            parsed_args["agent_counts.2"] = llm_configs["llm3"]["count"]
-        
-        wandb_metadata = {
-            "startedAt": datetime.utcnow().isoformat(),
-            "parsed_args": parsed_args,
-        }
-        
-        logger.info(f"Storing wandb metadata for debate {debate_id}")
-        logger.info(f"Model counts: {model_counts}")
-        logger.info(f"Metadata: {json.dumps(wandb_metadata, indent=2)}")
-        
-        db_manager = DatabaseManager()
-        async with db_manager.get_session() as session:
-            repo = DebateRepository(session)            
-            from sqlalchemy import update
-            await session.execute(
-                update(Debate)
-                .where(Debate.id == uuid.UUID(debate_id))
-                .values(wandb_metadata=wandb_metadata)
-            )
-            await session.commit()
-            
-        logger.info(f"Stored wandb metadata for debate {debate_id}")
-        
-    except Exception as e:
-        logger.error(f"Failed to store wandb metadata: {e}", exc_info=True)
+        p_args = {"seed": str(cfg.get("seed", 0)), "task": meta.get("task"), "experiment.name": cfg.get("experiment", {}).get("name")}
+        db = DatabaseManager()
+        async with db.get_session() as s:
+            await s.execute(update(Debate).where(Debate.id == uuid.UUID(debate_id)).values(wandb_metadata={"parsed_args": p_args}))
+            await s.commit()
+    except Exception: pass
 
 @celery_app.task(name="src.api.tasks.submit_human_response")
 def submit_human_response(debate_id: str, response_text: str, extracted_answer: str):
-    """
-    Submit a human response to an ongoing debate.
-    This is called from the HTTP endpoint and needs to put data in an async queue.
-    
-    Args:
-        debate_id: The debate ID
-        response_text: The human's response text
-        extracted_answer: The extracted answer from the response
-    """
-    logger.info(f"Human response submitted for debate {debate_id}")
-    logger.info(f"Response text: {response_text[:100]}...")
-    logger.info(f"Extracted answer: {extracted_answer}")
-    
-    if debate_id not in ACTIVE_ORCHESTRATORS:
-        logger.error(f"No active orchestrator found for debate {debate_id}")
-        logger.info(f"Available orchestrators: {list(ACTIVE_ORCHESTRATORS.keys())}")
-        raise ValueError(f"Debate {debate_id} not found or has timed out")
-    
-    orchestrator, _ = ACTIVE_ORCHESTRATORS[debate_id]
+    async def _publish():
+        connection = await aio_pika.connect_robust(RABBITMQ_URL)
+        async with connection:
+            ch = await connection.channel()
+            ex = await ch.declare_exchange('human_responses', aio_pika.ExchangeType.DIRECT, durable=True)
+            msg = aio_pika.Message(
+                json.dumps({"response_text": response_text, "extracted_answer": extracted_answer, "timestamp": datetime.utcnow().isoformat()}).encode(),
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+            )
+            await ex.publish(msg, routing_key=debate_id)
     
     try:
-        loop = orchestrator.human_response_queue._loop        
-        loop.call_soon_threadsafe(
-            orchestrator.human_response_queue.put_nowait,
-            (response_text, extracted_answer)
-        )
-        
-        update_orchestrator_activity(debate_id)
-        logger.info(f"Human response queued for debate {debate_id}")
-        
-        return {
-            "success": True,
-            "message": "Response queued successfully"
-        }
-        
+        asyncio.run(_publish())
+        return {"success": True}
     except Exception as e:
-        logger.error(f"Failed to queue human response: {e}", exc_info=True)
         raise ValueError(f"Failed to queue response: {str(e)}")
-
 
 @celery_app.task(name="src.api.tasks.get_debate_status")
 def get_debate_status(debate_id: str) -> Dict[str, Any]:
-    """Get the current status of a debate."""
     cleanup_idle_orchestrators()
-    
-    if debate_id not in ACTIVE_ORCHESTRATORS:
-        return {
-            "status": "not_found",
-            "message": "Debate not found or has timed out"
-        }
-    
-    orchestrator, last_activity = ACTIVE_ORCHESTRATORS[debate_id]
-    
-    return {
-        "status": "active",
-        "debate_status": orchestrator.get_status(),
-        "last_activity": last_activity,
-        "time_until_timeout": ORCHESTRATOR_TIMEOUT - (time.time() - last_activity)
-    }
+    if debate_id not in ACTIVE_ORCHESTRATORS: return {"status": "not_found"}
+    orch, last = ACTIVE_ORCHESTRATORS[debate_id]
+    return {"status": "active", "debate_status": orch.get_status(), "last_activity": last}
 
 @celery_app.task(name="src.api.tasks.cleanup_orchestrators_task")
 def cleanup_orchestrators_task():
-    """Periodic task to clean up idle orchestrators."""
     cleanup_idle_orchestrators()
-    return {
-        "active_orchestrators": len(ACTIVE_ORCHESTRATORS),
-        "timestamp": time.time()
-    }
+    return {"active": len(ACTIVE_ORCHESTRATORS)}

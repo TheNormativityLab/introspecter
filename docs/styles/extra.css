@@ -1,0 +1,133 @@
+@import url("https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600;1,700&display=swap");
+
+:root {
+  --md-text-font: "Open Sans", -apple-system, system-ui, Helvetica, Arial, sans-serif;
+  --md-typeface-heading: "Open Sans", -apple-system, system-ui, Helvetica, Arial, sans-serif;
+}
+
+.md-footer {
+  display: none;
+}
+
+.md-header__title {
+  margin-left: 0 !important;
+}
+
+.md-header--shadow {
+  box-shadow: none;
+}
+
+.md-sidebar__scrollwrap {
+  scrollbar-color: auto !important;
+}
+
+.md-typeset .admonition,
+.md-typeset details {
+  border: none;
+  outline: none;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.md-content .md-code__content {
+  border-radius: 8px;
+}
+
+.md-clipboard.md-icon {
+  color: #9e9e9e;
+}
+
+.md-typeset p,
+.md-typeset li {
+  font-size: 16px;
+}
+
+.md-typeset__table p {
+  line-height: 1em;
+}
+
+.md-nav {
+  font-size: 14px;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4 {
+  font-weight: 600;
+}
+
+.md-typeset pre > code {
+  font-size: 14px;
+}
+
+.md-typeset__table code {
+  font-size: 14px;
+}
+
+[data-md-color-scheme="default"] {
+  --md-default-fg-color: #212121;
+  --md-default-bg-color: #ffffff;
+  --md-primary-fg-color: #000;  
+  --md-accent-fg-color: #3f51b5; 
+  --md-code-fg-color: #000;
+  --md-code-bg-color: #f5f5f5;
+  --md-table-row-border-color: #e0e0e0;
+  --md-admonition-bg-color: #f8f8f8;
+  --md-admonition-title-fg-color: #373737;
+  --md-typeset-a-color: #000;
+}
+
+[data-md-color-scheme="default"] .md-header {
+  background-color: #000;
+}
+
+[data-md-color-scheme="default"] .md-content .md-typeset h1 {
+  color: #000;
+}
+
+[data-md-color-scheme="default"] .md-nav__title {
+  color: #000;
+  font-weight: 600;
+}
+
+[data-md-color-scheme="default"] .md-typeset h1 code {
+  color: #000;
+  padding: 0;
+  background-color: transparent;
+}
+
+[data-md-color-scheme="default"] .md-content a {
+  text-decoration: none;
+  color: #1565c0;
+  font-weight: 500;
+}
+
+[data-md-color-scheme="default"] .md-content a:not(.md-button) {
+  text-decoration: none;
+  color: #1565c0;
+  font-weight: 500;
+}
+
+[data-md-color-scheme="default"] .md-content a:not(.md-button):hover {
+  text-decoration: underline;
+  color: #1565c0;
+}
+
+[data-md-color-scheme="slate"] .md-content a:hover {
+  text-decoration: underline;
+  color: #9be7ff;
+}
+
+[data-md-color-scheme="slate"] .md-content .md-code__content {
+  background-color: #1e1e1e;
+}
+
+.md-nav__item .md-nav__link:hover,
+.md-nav__item .md-nav__link--active {
+    color: var(--md-accent-fg-color) !important;
+}
+
+.md-nav__item--active > .md-nav__link {
+    color: var(--md-accent-fg-color) !important;
+}

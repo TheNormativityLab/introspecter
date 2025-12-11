@@ -17,6 +17,9 @@ export enum debateRoutes {
   getQuestionDetails = "/:debateId/question/:questionIndex",
 }
 
+export enum argumentativeDebateRoutes {
+  PostResponse = "/response",
+}
 export enum userRoutes {
   GetUserAuth = "/user-auth",
 }
