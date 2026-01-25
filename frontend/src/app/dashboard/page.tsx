@@ -316,7 +316,7 @@ const Dashboard = () => {
                             <div className="p-6">
                                 <div className="flex justify-between items-start mb-3">
                                     <h3 className="font-bold text-slate-900 text-lg line-clamp-1 pr-4 group-hover:text-blue-600 transition-colors">
-                                        {experiment.name}
+                                            {experiment.name}
                                     </h3>
                                     <span className="flex items-center gap-1.5 text-[11px] font-medium text-slate-400 bg-slate-50 px-2.5 py-1 rounded-full whitespace-nowrap">
                                         <Clock size={10} /> {new Date(experiment.startDate).toLocaleDateString()}
@@ -325,18 +325,18 @@ const Dashboard = () => {
 
                                 <div className="mb-5 flex gap-2">
                                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
-                                        experiment.status === "completed" 
-                                          ? "bg-emerald-50 text-emerald-700 border-emerald-100" 
-                                          : "bg-amber-50 text-amber-700 border-amber-100"
-                                      }`}>
-                                        {experiment.status === "completed" ? <CheckCircle size={10} /> : <Activity size={10} />}
-                                        {experiment.status}
-                                      </span>
-                                      {experiment.hasHuman && (
-                                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-purple-50 text-purple-700 border border-purple-100">
-                                          <Users size={10} /> Human
-                                        </span>
-                                      )}
+                                         experiment.status === "completed" 
+                                           ? "bg-emerald-50 text-emerald-700 border-emerald-100" 
+                                           : "bg-amber-50 text-amber-700 border-amber-100"
+                                     }`}>
+                                         {experiment.status === "completed" ? <CheckCircle size={10} /> : <Activity size={10} />}
+                                         {experiment.status}
+                                     </span>
+                                     {experiment.hasHuman && (
+                                       <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-purple-50 text-purple-700 border border-purple-100">
+                                         <Users size={10} /> Human
+                                       </span>
+                                     )}
                                 </div>
 
                                 <div className="grid grid-cols-3 divide-x divide-slate-100 bg-slate-50/50 rounded-xl border border-slate-100 mb-5">
@@ -370,25 +370,26 @@ const Dashboard = () => {
                                     <div className="flex items-start gap-3">
                                          <div className="mt-1 w-5 h-5 rounded bg-purple-50 text-purple-500 flex items-center justify-center flex-shrink-0">
                                             <Bot size={12} />
-                                        </div>
-                                        <div className="flex flex-wrap gap-1.5">
-                                            {experiment.agents.slice(0, 3).map(a => (
-                                                <span key={a} className="px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-600 text-[11px] font-medium shadow-sm">
-                                                    {a}
-                                                </span>
-                                            ))}
-                                            {experiment.agents.length > 3 && (
-                                                <span className="px-2 py-0.5 rounded bg-slate-50 text-slate-400 border border-slate-100 text-[11px] font-medium">+{experiment.agents.length - 3}</span>
-                                            )}
-                                        </div>
+                                         </div>
+                                         <div className="flex flex-wrap gap-1.5">
+                                             {experiment.agents.slice(0, 3).map(a => (
+                                                 <span key={a} className="px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-600 text-[11px] font-medium shadow-sm">
+                                                     {a}
+                                                 </span>
+                                             ))}
+                                             {experiment.agents.length > 3 && (
+                                                 <span className="px-2 py-0.5 rounded bg-slate-50 text-slate-400 border border-slate-100 text-[11px] font-medium">+{experiment.agents.length - 3}</span>
+                                             )}
+                                         </div>
                                     </div>
                                 </div>
                             </div>
 
                             <div className="mt-auto bg-slate-50/50 border-t border-slate-100 p-4 flex items-center justify-between group-hover:bg-blue-50/10 transition-colors">
-                                <div className="flex items-center gap-3 overflow-hidden">
+                                <div className="flex items-center gap-3">
                                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Seed</span>
-                                    <div className="flex gap-1 overflow-x-auto no-scrollbar mask-gradient pr-2">
+                                    {/* Changed from overflow-x-auto to flex-wrap to remove scrollbar */}
+                                    <div className="flex gap-1 flex-wrap">
                                         {experiment.availableSeeds.map(seed => (
                                             <button 
                                                 key={seed}

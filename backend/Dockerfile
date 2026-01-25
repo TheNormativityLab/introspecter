@@ -10,11 +10,7 @@ RUN apt-get update && apt-get install -y curl git zsh \
 WORKDIR /app
 
 # Copy package files first (for caching)
-COPY package.json pnpm-lock.yaml* ./
-RUN pnpm add -D prisma@latest \
-    && pnpm add @prisma/client@latest
-    
-# Install dependencies
+COPY package.json pnpm-lock.yaml ./
 RUN pnpm install
 
 # Copy all source code

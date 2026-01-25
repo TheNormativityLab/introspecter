@@ -7,8 +7,7 @@ import {
   Scroll,
   ArrowLeft,
   FileText,
-  Quote,
-  LayoutGrid
+  Quote
 } from 'lucide-react';
 import data from '@/utils/data.json'
 
@@ -220,22 +219,22 @@ export default function DebateDashboard() {
                     </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto px-8 py-4 space-y-10 scrollbar-thin scrollbar-thumb-slate-200">
-                    {/* Debater 1 */}
-                    <div className="flex gap-4">
-                        <div className="flex-col flex items-center gap-1 pt-2">
-                            <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center border-2 border-white shadow-sm ring-1 ring-blue-50">
-                                <User size={14} />
-                            </div>
-                        </div>
-                        <div className="flex-1 max-w-3xl">
-                            <div className="bg-white border border-blue-100 p-6 rounded-2xl rounded-tl-none shadow-sm relative hover:shadow-md transition-shadow group">
-                                <div className="flex justify-between items-start mb-4">
-                                    <h4 className="font-bold text-slate-400 text-xs uppercase tracking-wide">Debater 1</h4>
-                                    <span className="text-[10px] font-bold bg-blue-50 text-blue-600 px-2 py-1 rounded-full uppercase tracking-wider border border-blue-100">
-                                        {currentDebate.debater1.claim}
-                                    </span>
+                <div className="flex-1 overflow-y-auto px-6 py-4 scrollbar-thin scrollbar-thumb-slate-200">
+                    <div className="grid grid-cols-2 gap-6 mb-8">
+                        <div className="flex flex-col gap-3">
+                            <div className="flex items-start justify-between gap-4 pb-2 border-b border-blue-100">
+                                <div className="flex items-center gap-3 flex-shrink-0">
+                                    <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center border-2 border-white shadow-sm flex-shrink-0">
+                                        <User size={14} />
+                                    </div>
+                                    <h4 className="font-bold text-slate-600 text-xs uppercase tracking-wide whitespace-nowrap">Debater 1</h4>
                                 </div>
+                                <span className="text-[10px] font-bold bg-blue-50 text-blue-600 px-3 py-1.5 rounded-full uppercase tracking-wider border border-blue-100 text-right leading-tight">
+                                    {currentDebate.debater1.claim}
+                                </span>
+                            </div>
+                            
+                            <div className="bg-white border border-blue-100 p-5 rounded-xl shadow-sm hover:shadow-md transition-shadow h-full">
                                 <div className="space-y-4">
                                     {currentDebate.debater1.arguments.map((arg, i) => (
                                         <p key={i} className="text-sm text-slate-600 leading-7">
@@ -245,23 +244,21 @@ export default function DebateDashboard() {
                                 </div>
                             </div>
                         </div>
-                    </div>
 
-                    {/* Debater 2 */}
-                    <div className="flex gap-4 flex-row-reverse">
-                        <div className="flex-col flex items-center gap-1 pt-2">
-                            <div className="w-8 h-8 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center border-2 border-white shadow-sm ring-1 ring-rose-50">
-                                <User size={14} />
-                            </div>
-                        </div>
-                        <div className="flex-1 max-w-3xl">
-                            <div className="bg-white border border-rose-100 p-6 rounded-2xl rounded-tr-none shadow-sm relative hover:shadow-md transition-shadow group">
-                                <div className="flex justify-between items-start mb-4 flex-row-reverse">
-                                    <h4 className="font-bold text-slate-400 text-xs uppercase tracking-wide">Debater 2</h4>
-                                    <span className="text-[10px] font-bold bg-rose-50 text-rose-600 px-2 py-1 rounded-full uppercase tracking-wider border border-rose-100">
-                                        {currentDebate.debater2.claim}
-                                    </span>
+                        <div className="flex flex-col gap-3">
+                            <div className="flex items-start justify-between gap-4 pb-2 border-b border-rose-100">
+                                <div className="flex items-center gap-3 flex-shrink-0">
+                                    <div className="w-8 h-8 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center border-2 border-white shadow-sm flex-shrink-0">
+                                        <User size={14} />
+                                    </div>
+                                    <h4 className="font-bold text-slate-600 text-xs uppercase tracking-wide whitespace-nowrap">Debater 2</h4>
                                 </div>
+                                <span className="text-[10px] font-bold bg-rose-50 text-rose-600 px-3 py-1.5 rounded-full uppercase tracking-wider border border-rose-100 text-right leading-tight">
+                                    {currentDebate.debater2.claim}
+                                </span>
+                            </div>
+
+                            <div className="bg-white border border-rose-100 p-5 rounded-xl shadow-sm hover:shadow-md transition-shadow h-full">
                                 <div className="space-y-4">
                                     {currentDebate.debater2.arguments.map((arg, i) => (
                                         <p key={i} className="text-sm text-slate-600 leading-7">
@@ -272,30 +269,31 @@ export default function DebateDashboard() {
                             </div>
                         </div>
                     </div>
-                </div>
 
-                {/* Judge Section */}
-                {currentDebate.judge && (
-                    <div className="p-6 bg-white border-t border-slate-100">
-                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-5">
-                            <div className="flex items-center gap-2 mb-3">
-                                <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide">Judge's Output</h3>
+                    {currentDebate.judge && (
+                        <div className="mt-4">
+                            <div className="bg-slate-50 border border-slate-200 rounded-xl p-5">
+                                <div className="flex items-center gap-2 mb-3">
+                                    <div className="w-1 h-4 bg-slate-400 rounded-full"></div>
+                                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide">Judge's Output</h3>
+                                </div>
+                                
+                                {currentDebate.judge.questions && currentDebate.judge.questions.length > 0 ? (
+                                    <div className="grid grid-cols-1 gap-2">
+                                        {currentDebate.judge.questions.map((q, i) => (
+                                            <div key={i} className="text-slate-700 text-sm leading-relaxed flex gap-2">
+                                                <span className="text-slate-400">•</span>
+                                                <span>{q}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <p className="text-slate-400 text-sm italic">No active judge comments.</p>
+                                )}
                             </div>
-                            
-                            {currentDebate.judge.questions && currentDebate.judge.questions.length > 0 ? (
-                                <ul className="list-disc list-inside space-y-1">
-                                    {currentDebate.judge.questions.map((q, i) => (
-                                        <li key={i} className="text-slate-700 text-sm leading-relaxed">
-                                            {q}
-                                        </li>
-                                    ))}
-                                </ul>
-                            ) : (
-                                <p className="text-slate-400 text-sm italic">No active judge comments.</p>
-                            )}
                         </div>
-                    </div>
-                )}
+                    )}
+                </div>
             </main>
 
             <aside className="col-span-12 md:col-span-3 flex flex-col bg-slate-50/50 min-h-0">
@@ -350,7 +348,6 @@ export default function DebateDashboard() {
                     )}
                 </div>
             </aside>
-
         </div>
       </div>
     </div>

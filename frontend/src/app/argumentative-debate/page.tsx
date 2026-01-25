@@ -1,6 +1,6 @@
 "use client"
 import { useRouter } from "next/navigation";
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   BookOpen, 
   Scroll, 
@@ -59,12 +59,13 @@ export default function DebateGenerator() {
   const [isLoaded, setIsLoaded] = useState(false);
   const [story, setStory] = useState("");
   const [question, setQuestion] = useState("");
-  const [debater1Stance, setDebater1Stance] = useState("");
-  const [debater2Stance, setDebater2Stance] = useState("");
+  const [debater1Stance, setDebater1Stance] = useState(""); 
+  const [debater2Stance, setDebater2Stance] = useState(""); 
   const [streamingText, setStreamingText] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [conversationHistory, setConversationHistory] = useState<ConversationTurn[]>([]);
-  const [debater2Draft, setDebater2Draft] = useState(""); 
+  const [debaterDraft, setDebaterDraft] = useState(""); 
+  const [activeRoundIndex, setActiveRoundIndex] = useState(0);
    
   const [citations, setCitations] = useState<Citation[]>([]);
   const [activeCitationId, setActiveCitationId] = useState<string | null>(null);
@@ -137,7 +138,7 @@ export default function DebateGenerator() {
           if (newCitations && newCitations.length > 0) {
             setCitations(prev => {
               const formatted = newCitations.map((c: any, i: number) => ({
-                id: `cit-ai-${Date.now()}-${i}`, // Starts with cit-ai
+                id: `cit-ai-${Date.now()}-${i}`,
                 sourceId: c.sourceId,
                 text: c.text,
                 index: c.index 
@@ -193,12 +194,15 @@ export default function DebateGenerator() {
     
     setStory(selectedDebate.story);
     setQuestion(selectedDebate.question);
-    setDebater1Stance(selectedDebate.debater1.claim);
-    setDebater2Stance(selectedDebate.debater2.claim);     
+    
+    setDebater1Stance(selectedDebate.debater1.claim); 
+    setDebater2Stance(selectedDebate.debater2.claim); 
     setCitations([]);
     setConversationHistory([]);
-    setDebater2Draft("");
+    setDebaterDraft("");
     setIsLoaded(true);
+    setActiveRoundIndex(0);
+    
     generateOpeningArgument(selectedDebate);
   };
 
@@ -249,7 +253,6 @@ export default function DebateGenerator() {
       <div className="text-slate-600 leading-relaxed text-justify whitespace-pre-wrap">
         {parts.map((part, i) => {
           if (part.highlight) {
-             // Determine color based on ID prefix
              const isAiSource = part.id?.startsWith('cit-ai');
              const activeClass = isAiSource 
                 ? 'bg-blue-200 text-blue-900 ring-2 ring-blue-300' 
@@ -265,14 +268,10 @@ export default function DebateGenerator() {
                   `}
                   onMouseEnter={() => setActiveCitationId(part.id)}
                   onMouseLeave={() => setActiveCitationId(null)}
-                  // FIX 1: Add onMouseUp here so you can select parts of this quote
                   onMouseUp={handleStoryTextSelect}
                   onClick={(e) => {
-                    // FIX 2: Prevent adding the whole citation if the user is actually selecting text
                     const selection = window.getSelection();
-                    if (selection && selection.toString().length > 0) {
-                        return; // User is selecting, don't trigger the click
-                    }
+                    if (selection && selection.toString().length > 0) return;
                     if(part.sourceId) insertCitationIntoDraft(part.sourceId);
                   }}
                 >
@@ -301,19 +300,15 @@ export default function DebateGenerator() {
 
             const isAi = speaker === 'ai';
             const isActive = activeCitationId === citation.id;
-            // Note: In the chat bubble, we style based on the Speaker (AI vs Human) for readability,
-            // but the hover effect on the sidebar will respect the source type.
             
             let spanClasses = "inline transition-all duration-200 cursor-pointer rounded px-0.5 ";
             
             if (isAi) {
-                // AI Speaker Styling
                 spanClasses += "underline decoration-2 underline-offset-2 ";
                 spanClasses += isActive 
                     ? "bg-blue-100 decoration-blue-500 text-blue-900 font-medium " 
                     : "decoration-blue-300 text-slate-800 hover:bg-blue-50 hover:decoration-blue-500 ";
             } else {
-                // Human Speaker Styling
                 spanClasses += "underline decoration-2 underline-offset-2 ";
                 spanClasses += isActive
                     ? "bg-rose-100 decoration-rose-500 text-rose-900 font-medium "
@@ -334,7 +329,6 @@ export default function DebateGenerator() {
                   if (textEl) textEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 }}
               >
-                {/* Truncation removed as requested */}
                 "{citation.text}"
               </span>
             );
@@ -355,7 +349,7 @@ export default function DebateGenerator() {
         : 1;
       
       const newCitation: Citation = {
-        id: `cit-manual-${Date.now()}`, // Starts with cit-manual
+        id: `cit-manual-${Date.now()}`,
         sourceId: newId,
         text: text
       };
@@ -369,8 +363,9 @@ export default function DebateGenerator() {
   };
 
   const handleHumanSubmit = async () => {
-    if (!debater2Draft.trim()) return; 
-    const currentDraft = debater2Draft;
+    if (!debaterDraft.trim()) return; 
+    const currentDraft = debaterDraft;
+    
     const updatedHistory: ConversationTurn[] = [
       ...conversationHistory, 
       { speaker: 'human', args: [], draft: currentDraft }
@@ -378,10 +373,10 @@ export default function DebateGenerator() {
     setConversationHistory(updatedHistory);
     setIsGenerating(true);
     setStreamingText("");
-    setDebater2Draft("");
+    setDebaterDraft("");
 
     const payload = {
-      type: 'rebuttal',
+      type: 'rebuttal', 
       story: story,
       question: question,
       ai_claim: debater1Stance,
@@ -397,8 +392,8 @@ export default function DebateGenerator() {
       );
       setConversationHistory(prev => [...prev, { speaker: 'ai', args: newArgs }]);
     } catch (error) {
-      console.error("Failed to generate rebuttal:", error);
-      setConversationHistory(prev => [...prev, { speaker: 'ai', args: [{ text: "Error generating rebuttal." }] }]);
+      console.error("Failed to generate response:", error);
+      setConversationHistory(prev => [...prev, { speaker: 'ai', args: [{ text: "Error generating response." }] }]);
     } finally {
       setStreamingText("");
       setIsGenerating(false);
@@ -413,12 +408,34 @@ export default function DebateGenerator() {
     const text = textarea.value;
     const insertion = ` [${sourceId}] `;
     const newText = text.substring(0, start) + insertion + text.substring(end);
-    setDebater2Draft(newText);
+    setDebaterDraft(newText);
     setTimeout(() => {
       textarea.focus();
       textarea.setSelectionRange(start + insertion.length, start + insertion.length);
     }, 0);
   };
+
+  const rounds = useMemo(() => {
+    const roundsList = [];
+    const totalTurns = conversationHistory.length;
+    
+    for (let i = 0; i < totalTurns; i += 2) {
+      roundsList.push({
+        ai: conversationHistory[i],
+        human: conversationHistory[i+1] || null
+      });
+    }
+
+    if (totalTurns % 2 === 0 && isGenerating) {
+        roundsList.push({ ai: null, human: null });
+    }
+    
+    return roundsList;
+  }, [conversationHistory, isGenerating]);
+
+  useEffect(() => {
+    setActiveRoundIndex(Math.max(0, rounds.length - 1));
+  }, [rounds.length]);
 
   if (!isLoaded) return <div className="h-screen flex items-center justify-center gap-2"><Loader2 className="animate-spin"/> Loading Case...</div>;
 
@@ -459,101 +476,119 @@ export default function DebateGenerator() {
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Debate Question</span>
                   <div className="w-full text-lg font-semibold text-slate-800 leading-snug">{question}</div>
                 </div>
+
                 <div className="grid grid-cols-2 gap-6 pt-2">
-                  <div className="bg-blue-50/50 p-3 rounded-lg border border-blue-100/50">
-                    <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-1 block">Debater 1 (AI)</span>
-                    <div className="text-sm font-medium text-slate-700 leading-relaxed">{debater1Stance}</div>
-                  </div>
-                  <div className="bg-rose-50/50 p-3 rounded-lg border border-rose-100/50">
-                    <span className="text-[10px] font-bold text-rose-400 uppercase tracking-widest mb-1 block">Debater 2 (Human)</span>
-                    <div className="text-sm font-medium text-slate-700 leading-relaxed">{debater2Stance}</div>
-                  </div>
+                   <div className="bg-blue-50/50 p-3 rounded-lg border border-blue-100/50">
+                     <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-1 block">Debater 1 (AI)</span>
+                     <div className="text-sm font-medium text-slate-700 leading-relaxed">{debater1Stance}</div>
+                   </div>
+                   <div className="bg-rose-50/50 p-3 rounded-lg border border-rose-100/50">
+                     <span className="text-[10px] font-bold text-rose-400 uppercase tracking-widest mb-1 block">Debater 2 (You)</span>
+                     <div className="text-sm font-medium text-slate-700 leading-relaxed">{debater2Stance}</div>
+                   </div>
+                </div>
+
+                <div className="flex gap-2 border-b border-slate-100 pb-1 overflow-x-auto no-scrollbar">
+                     {rounds.map((_, idx) => (
+                         <button
+                            key={idx}
+                            onClick={() => setActiveRoundIndex(idx)}
+                            className={`px-4 py-2 text-xs font-bold uppercase tracking-wide rounded-t-lg transition-all ${
+                                activeRoundIndex === idx 
+                                ? 'bg-slate-800 text-white' 
+                                : 'bg-slate-50 text-slate-400 hover:bg-slate-100'
+                            }`}
+                         >
+                            Round {idx + 1}
+                         </button>
+                     ))}
                 </div>
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-8 py-6 space-y-8 scrollbar-thin scrollbar-thumb-slate-200">
-              {conversationHistory.map((turn, index) => (
-                <div key={index}>
-                  {turn.speaker === 'ai' ? (
-                    <div className="flex gap-4">
-                      <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center border-2 border-white shadow-sm flex-shrink-0 mt-2">
-                        <Bot size={16} />
-                      </div>
-                      <div className="flex-1 max-w-3xl">
-                        <div className="bg-white border border-blue-100 p-6 rounded-2xl rounded-tl-none shadow-sm">
-                          <h4 className="font-bold text-slate-400 text-xs uppercase tracking-wide mb-4">
-                            {index === 0 ? "AI Opening Argument" : "AI Rebuttal"}
-                          </h4>
-                          <div className="space-y-4">
-                            {turn.args.map((arg, i) => (
-                              <p key={i} className="text-sm text-slate-600 leading-7 bg-blue-50/30 p-3 rounded-lg border border-blue-100/50">
-                                {renderMessageContent(arg.text, 'ai')}
-                              </p>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex gap-4 flex-row-reverse">
-                      <div className="w-8 h-8 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center border-2 border-white shadow-sm flex-shrink-0 mt-2">
-                        <PenTool size={14} />
-                      </div>
-                      <div className="flex-1 max-w-3xl">
-                        <div className="bg-white border border-rose-100 p-6 rounded-2xl rounded-tr-none shadow-sm">
-                          <h4 className="font-bold text-rose-400 text-xs uppercase tracking-wide mb-4">Your Argument</h4>
-                          <p className="text-sm text-slate-700 leading-7 bg-rose-50/30 p-3 rounded-lg border border-rose-100/50">
-                            {turn.draft && renderMessageContent(turn.draft, 'human')}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
+            <div className="flex-1 overflow-y-auto px-6 py-6 scrollbar-thin scrollbar-thumb-slate-200">
+               <div className="grid grid-cols-2 gap-6 items-stretch min-h-full">
+                   
+                   <div className="flex flex-col gap-4">
+                       <div className="flex items-center gap-2 pb-2 border-b border-blue-100">
+                            <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center border border-white shadow-sm">
+                                <Bot size={12} />
+                            </div>
+                            <span className="text-xs font-bold text-blue-600 uppercase tracking-wide">Debater 1 (AI)</span>
+                       </div>
 
-              {isGenerating && (
-                <div className="flex gap-4">
-                  <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center border-2 border-white shadow-sm mt-2">
-                    <Loader2 size={16} className="animate-spin" />
-                  </div>
-                  <div className="flex-1 max-w-3xl">
-                    <div className="bg-white border border-blue-100 p-6 rounded-2xl rounded-tl-none shadow-sm">
-                      <h4 className="font-bold text-slate-400 text-xs uppercase tracking-wide mb-4">AI is Thinking...</h4>
-                      <p className="text-sm text-slate-600 leading-7 bg-blue-50/30 p-3 rounded-lg border border-blue-100/50">
-                        {renderMessageContent(streamingText, 'ai')} <span className="inline-block w-1 h-4 bg-blue-600 ml-1 animate-pulse"></span>
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+                       {rounds[activeRoundIndex]?.ai ? (
+                           <div className="bg-white border border-blue-100 p-4 rounded-xl shadow-sm h-full">
+                               <div className="space-y-4">
+                                   {rounds[activeRoundIndex].ai.args.map((arg, i) => (
+                                       <p key={i} className="text-sm text-slate-600 leading-7">
+                                           {renderMessageContent(arg.text, 'ai')}
+                                       </p>
+                                   ))}
+                               </div>
+                           </div>
+                       ) : isGenerating && !rounds[activeRoundIndex]?.human ? (
+                            <div className="bg-white border border-blue-100 p-4 rounded-xl shadow-sm h-full">
+                                <div className="flex items-center gap-2 mb-3 text-blue-500">
+                                    <Loader2 size={14} className="animate-spin" />
+                                    <span className="text-xs font-bold uppercase">AI is thinking...</span>
+                                </div>
+                                <p className="text-sm text-slate-600 leading-7">
+                                    {renderMessageContent(streamingText, 'ai')}
+                                    <span className="inline-block w-1 h-4 bg-blue-500 ml-1 animate-pulse align-middle"></span>
+                                </p>
+                            </div>
+                       ) : (
+                           <div className="h-full min-h-[500px] border-2 border-dashed border-slate-100 rounded-xl flex flex-col items-center justify-center text-slate-300 gap-2">
+                               <Bot size={24} className="opacity-50" />
+                               <span className="text-xs font-medium uppercase tracking-wide">Waiting...</span>
+                           </div>
+                       )}
+                   </div>
 
-            <div className="p-4 bg-white border-t border-slate-100">
-               <div className="bg-white border border-rose-100 p-1 rounded-2xl shadow-sm focus-within:ring-2 focus-within:ring-rose-100 transition-all">
-                  <div className="bg-rose-50/50 px-4 py-2 rounded-t-xl border-b border-rose-100 flex justify-between items-center">
-                     <h4 className="font-bold text-rose-400 text-xs uppercase tracking-wide">Your Argument</h4>
-                     <span className="text-[10px] text-rose-400/70">Highlight text on left to cite</span>
-                  </div>
-                  <textarea 
-                    ref={textAreaRef}
-                    value={debater2Draft}
-                    onChange={(e) => setDebater2Draft(e.target.value)}
-                    placeholder={`Argue for: "${debater2Stance}"...`}
-                    className="w-full min-h-[120px] p-4 text-sm text-slate-700 leading-7 resize-none focus:outline-none"
-                  />
-                  <div className="p-2 flex justify-end bg-white rounded-b-xl">
-                    <button 
-                      onClick={handleHumanSubmit}
-                      disabled={!debater2Draft.trim() || isGenerating}
-                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wide transition-all ${
-                        !debater2Draft.trim() || isGenerating ? 'bg-slate-100 text-slate-400' : 'bg-rose-600 text-white hover:bg-rose-700 shadow-md'
-                      }`}
-                    >
-                      <Send size={14} /> Submit & Rebut
-                    </button>
-                  </div>
+                   <div className="flex flex-col gap-4 h-full">
+                       <div className="flex items-center gap-2 pb-2 border-b border-rose-100">
+                            <div className="w-6 h-6 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center border border-white shadow-sm">
+                                <PenTool size={12} />
+                            </div>
+                            <span className="text-xs font-bold text-rose-600 uppercase tracking-wide">Debater 2 (You)</span>
+                       </div>
+                       
+                       {rounds[activeRoundIndex]?.human ? (
+                           <div className="bg-white border border-rose-100 p-4 rounded-xl shadow-sm h-full">
+                               <p className="text-sm text-slate-700 leading-7">
+                                  {renderMessageContent(rounds[activeRoundIndex].human.draft || "", 'human')}
+                               </p>
+                           </div>
+                       ) : (
+                           <div className="bg-white border border-rose-200 p-1 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-rose-100 transition-all flex flex-col flex-1 h-full">
+                               <textarea 
+                                  ref={textAreaRef}
+                                  value={debaterDraft}
+                                  onChange={(e) => setDebaterDraft(e.target.value)}
+                                  placeholder={activeRoundIndex === 0 ? "Write your rebuttal..." : "Write your rebuttal..."}
+                                  className="w-full flex-1 p-4 text-sm text-slate-700 leading-7 resize-none focus:outline-none rounded-t-xl"
+                               />
+                               <div className="p-2 flex justify-between items-center bg-rose-50/50 rounded-b-xl border-t border-rose-100">
+                                   <span className="text-[10px] text-rose-400 font-medium pl-2">
+                                       Highlight story to cite
+                                   </span>
+                                   <button 
+                                      onClick={handleHumanSubmit}
+                                      disabled={!debaterDraft.trim() || isGenerating}
+                                      className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all ${
+                                         !debaterDraft.trim() || isGenerating 
+                                         ? 'bg-slate-200 text-slate-400' 
+                                         : 'bg-rose-600 text-white hover:bg-rose-700 shadow-sm'
+                                      }`}
+                                   >
+                                      <Send size={12} /> Submit
+                                   </button>
+                               </div>
+                           </div>
+                       )}
+                   </div>
+
                </div>
             </div>
           </main>
