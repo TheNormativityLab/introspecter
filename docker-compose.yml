@@ -67,10 +67,10 @@ services:
       FASTAPI_BASE_URL: http://introspecter-api:3001
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
+      interval: 15s 
       timeout: 10s
-      retries: 5
-      start_period: 30s
+      retries: 15
+      start_period: 300s
     depends_on:
       introspecter-postgres-backend:
         condition: service_healthy
@@ -275,11 +275,11 @@ services:
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running"]
       interval: 10s
       timeout: 10s
       retries: 10
-      start_period: 40s
+      start_period: 120s
     restart: unless-stopped
     networks:
       - introspecter-network
