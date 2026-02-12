@@ -1,23 +1,30 @@
-# Use Node base image
-FROM node:24-bullseye-slim
+FROM node:18-alpine
 
-# Set pnpm home and update PATH
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
+RUN apk add --no-cache python3 py3-pip curl
 
-# Install dependencies and setup pnpm
-RUN apt-get update && apt-get install -y curl git zsh \
-    && corepack enable \
-    && corepack prepare pnpm@latest --activate
 
-# Set working directory
+RUN pip3 install --no-cache-dir --break-system-packages wandb
+
+
+RUN npm install -g pnpm
+
 WORKDIR /app
 
-# Copy package files first
 COPY package.json pnpm-lock.yaml ./
+
 RUN pnpm install
+
+COPY prisma ./prisma/
+
+RUN pnpm exec prisma generate
 
 COPY . .
 
+RUN pnpm run build
+
 EXPOSE 8000
-ENTRYPOINT [ "sh", "/app/docker-entrypoint.sh" ]
+
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+ENTRYPOINT ["/docker-entrypoint.sh"]

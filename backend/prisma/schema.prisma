@@ -22,23 +22,29 @@ model LlmConfig {
   updatedAt   DateTime @updatedAt @map("updated_at")
   debates     Debate[] @relation("DebateToLlmConfig")
 
+  @@unique([modelName, model])
   @@map("llm_configs")
 }
 
 model Debate {
   id              Int         @id @default(autoincrement())
-  experimentId    String?  
+
+  /// wandb run.id (stable, global)
+  experimentId    String      @unique @map("experiment_id")
+
   seed            Int?
   datasetName     String?     @map("dataset_name")
   status          String      @default("completed")
+
   performanceData Json?       @map("performance_data")
   resultData      Json?       @map("result_data")
   wandbMetadata   Json?       @map("wandb_metadata")
+
   processedAt     DateTime    @map("processed_at")
   createdAt       DateTime    @default(now()) @map("created_at")
   updatedAt       DateTime    @updatedAt @map("updated_at")
+
   llmConfigs      LlmConfig[] @relation("DebateToLlmConfig")
 
-  @@unique([datasetName, seed, createdAt])
   @@map("debates")
 }

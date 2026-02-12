@@ -1,4 +1,3 @@
-// Type definitions
 interface ParsedArgs {
   [key: string]: unknown;
   task?: string;
@@ -9,7 +8,10 @@ interface ParsedArgs {
 interface RunData {
   wandb_metadata?: {
     parsed_args?: ParsedArgs | ParsedArgs[];
+    tags?: string[];
   };
+  dataset_name?: string;
+  status?: string;
 }
 
 interface LLMConfig {
@@ -19,6 +21,8 @@ interface LLMConfig {
 
 interface ExperimentData {
   experiment_name?: string;
+  // [UPDATED] Allow string OR array of strings
+  dataset_name?: string | string[]; 
   runs?: RunData[];
   model_config?: {
     LLM?: LLMConfig[];
@@ -55,7 +59,119 @@ interface Experiment {
   rawData: ExperimentData;
 }
 
-// Helper function to safely access parsed_args regardless of structure
+const mapLLMConfigToDisplayName = (configName: string): string => {
+  const mapping: Record<string, string> = {
+    gpt_3_5_turbo: "gpt-3.5-turbo",
+    gpt_4o_mini: "gpt-4o-mini",
+    gpt_4o: "gpt-4o",
+    llama_3_1_8b_chat: "llama-3.1-8b-chat",
+    vec_llama_3_1_8b: "llama-3.1-8b-chat",
+    vec_mistral_7b: "mistral-7b",
+    mistral_7b: "mistral-7b",
+  };
+
+  const normalized = configName.toLowerCase().replace(/[-_\s]/g, "");
+  for (const [key, value] of Object.entries(mapping)) {
+    const normalizedKey = key.toLowerCase().replace(/[-_\s]/g, "");
+    if (normalized.includes(normalizedKey)) return value;
+  }
+  return configName;
+};
+
+const normalizeDatasetName = (name: string): string => {
+  if (!name || typeof name !== 'string') return "unknown";
+  const lower = name.toLowerCase();
+  
+  if (lower.includes("mmlu")) return "mmlu";
+  if (lower.includes("gsm8k")) return "gsm8k";
+  if (lower.includes("commonsense")) return "commonsense_qa";
+  
+  return lower;
+};
+
+export const transformExperiment = (data: ExperimentData): Experiment => {
+  const experimentName = data.experiment_name || "Unknown Experiment";
+  
+  const rawWandb = data.runs?.[0]?.wandb_metadata;
+  const wandbMetadata: any = typeof rawWandb === 'string' ? JSON.parse(rawWandb) : rawWandb;
+  
+  let agents: string[] = [];
+  let numRounds = 1;
+  const rawDatasets = new Set<string>();
+
+  // [UPDATED] Check Root Level dataset_name (Handle both String and Array)
+  if (data.dataset_name) {
+    if (Array.isArray(data.dataset_name)) {
+      data.dataset_name.forEach(d => {
+        if (d && typeof d === 'string') rawDatasets.add(d);
+      });
+    } else if (typeof data.dataset_name === 'string') {
+      rawDatasets.add(data.dataset_name);
+    }
+  }
+
+  // 2. Check W&B Tags
+  if (wandbMetadata?.tags && Array.isArray(wandbMetadata.tags)) {
+    wandbMetadata.tags.forEach((tag: string) => {
+      if (tag.startsWith("rounds-")) {
+        numRounds = parseInt(tag.replace("rounds-", ""), 10);
+      }
+      
+      if (tag.startsWith("task-")) {
+        rawDatasets.add(tag.replace("task-", ""));
+      }
+      
+      const isMetaTag = ["name-", "seed-", "task-", "rounds-"].some(prefix => tag.startsWith(prefix));
+      if (!isMetaTag) {
+        agents.push(mapLLMConfigToDisplayName(tag.replace(/-\d+$/, "")));
+      }
+    });
+  }
+
+  // 3. Fallback to runs if still empty
+  if (rawDatasets.size === 0 && data.runs) {
+    data.runs.forEach(r => {
+      if (r.dataset_name) {
+        rawDatasets.add(r.dataset_name);
+      }
+    });
+  }
+
+  if (agents.length === 0 && data.model_config?.LLM) {
+    agents = data.model_config.LLM.map((c: LLMConfig) => 
+      mapLLMConfigToDisplayName(c.modelName || c.model || "unknown")
+    );
+  }
+
+  const normalizedDatasets = Array.from(rawDatasets)
+    .map(normalizeDatasetName)
+    .filter((v, i, a) => a.indexOf(v) === i); 
+
+  const availableSeeds = data.seeds_present ? data.seeds_present.map(String) : ["0"];
+  const isComplete = data.is_complete || data.runs?.every(r => r.status === "completed");
+
+  return {
+    id: experimentName,
+    name: experimentName, 
+    datasets: normalizedDatasets.length > 0 ? normalizedDatasets : ["unknown"],
+    agents: [...new Set(agents)],
+    status: isComplete ? "completed" : "in-progress",
+    endDate: formatDate(data.last_updated),
+    startDate: formatDate(data.created_at),
+    numAgents: agents.length || 1,
+    numRounds: numRounds, 
+    numQuestions: (getParsedArgsValue(wandbMetadata?.parsed_args, "experiment.num_questions", 100) as number),
+    hasHuman: agents.some(a => a.toLowerCase().includes("human")),
+    availableSeeds,
+    selectedSeed: availableSeeds[0] || "0",
+    performance: {
+      majority_vote: data.performance_data?.[data.performance_data.length - 1]?.majority_vote || 0,
+      rounds_completed: data.completed_runs || 0,
+    },
+    rawData: data,
+  };
+};
+
 const getParsedArgsValue = (
   parsedArgs: ParsedArgs | ParsedArgs[] | undefined,
   key: string,
@@ -65,7 +181,6 @@ const getParsedArgsValue = (
   return args?.[key] ?? defaultValue;
 };
 
-// Helper function for date formatting
 const formatDate = (dateString: string | undefined): string => {
   if (!dateString) return "Unknown";
   try {
@@ -80,261 +195,34 @@ const formatDate = (dateString: string | undefined): string => {
   }
 };
 
-// Map LLM config names to friendly display names
-const mapLLMConfigToDisplayName = (configName: string): string => {
-  const mapping: Record<string, string> = {
-    gpt_3_5_turbo: "gpt-3.5-turbo",
-    gpt_4o_mini: "gpt-4o-mini",
-    gpt_4o: "gpt-4o",
-    vec_llama_3_1_8B: "llama-3.1-8b-chat",
-    vec_llama_3_1_70B: "llama-3.1-70b-chat",
-    vec_mistral_7B: "mistral-7b",
-    mistral_7b: "mistral-7b",
-    llama_3_1_8b_chat: "llama-3.1-8b-chat",
-  };
-
-  const normalized = configName.toLowerCase().replace(/[-_\s]/g, "");
-
-  for (const [key, value] of Object.entries(mapping)) {
-    const normalizedKey = key.toLowerCase().replace(/[-_\s]/g, "");
-    if (
-      normalized.includes(normalizedKey) ||
-      normalizedKey.includes(normalized)
-    ) {
-      return value;
-    }
-  }
-
-  return configName;
-};
-
-// Extract agents from parsed_args (newer format)
-const extractAgentsFromParsedArgs = (
-  parsedArgs: ParsedArgs | undefined
-): string[] => {
+const extractAgentsFromParsedArgs = (parsedArgs: ParsedArgs | undefined): string[] => {
   if (!parsedArgs) return [];
-
   const agents: string[] = [];
-
   Object.keys(parsedArgs).forEach((key) => {
     if (key.startsWith("llm_conf@")) {
       const configName = parsedArgs[key] as string;
-      if (configName) {
-        agents.push(mapLLMConfigToDisplayName(configName));
-      }
+      if (configName) agents.push(mapLLMConfigToDisplayName(configName));
     }
   });
-
   return agents;
-};
-
-// Main transform function with dynamic parsed_args handling
-const transformExperiment = (data: ExperimentData): Experiment => {
-  const experimentName = data.experiment_name || "Unknown Experiment";
-
-  const parsedArgsRaw: ParsedArgs | ParsedArgs[] | undefined =
-    data.runs?.[0]?.wandb_metadata?.parsed_args;
-
-  const parsedArgs: ParsedArgs | undefined = Array.isArray(parsedArgsRaw)
-    ? parsedArgsRaw[0]
-    : parsedArgsRaw;
-
-  console.log(`\n=== Processing experiment: ${experimentName} ===`);
-  console.log("Parsed args:", parsedArgs);
-  console.log("Model config:", data.model_config);
-
-  let agents: string[] = [];
-
-  agents = extractAgentsFromParsedArgs(parsedArgs);
-  console.log("Agents from parsed_args:", agents);
-
-  if (
-    agents.length === 0 &&
-    data.model_config?.LLM &&
-    Array.isArray(data.model_config.LLM)
-  ) {
-    agents = data.model_config.LLM.map((config: LLMConfig) =>
-      mapLLMConfigToDisplayName(config.modelName || config.model || "unknown")
-    ).filter(
-      (agent): agent is string =>
-        typeof agent === "string" && agent !== "unknown"
-    );
-    console.log("Agents from model_config.LLM:", agents);
-  }
-
-  if (agents.length === 0) {
-    agents = parseAgentsFromExperimentName(experimentName);
-    console.log("Agents from experiment name:", agents);
-  }
-
-  agents = [...new Set(agents)];
-  console.log("Final agents list:", agents);
-
-  const rawDatasets: string[] = [
-    ...new Set(
-      (
-        data.runs?.map((run: RunData) => {
-          const parsedArgs = run.wandb_metadata?.parsed_args;
-          const task = Array.isArray(parsedArgs)
-            ? parsedArgs[0]?.task
-            : parsedArgs?.task;
-          return task;
-        }) ?? []
-      ).filter((task): task is string => typeof task === "string")
-    ),
-  ];
-
-  const datasets = [
-    ...new Set(
-      (Array.isArray(rawDatasets) ? rawDatasets : [rawDatasets]).flatMap(
-        (dataset) =>
-          dataset.includes(",")
-            ? dataset.split(",").map((d) => d.trim())
-            : [dataset.trim()]
-      )
-    ),
-  ];
-
-  const hasHuman =
-    (data.model_config?.Human &&
-      Array.isArray(data.model_config.Human) &&
-      data.model_config.Human.length > 0) ||
-    agents.some(
-      (a) =>
-        a.toLowerCase().includes("human") ||
-        a.toLowerCase().includes("human-participant") ||
-        /^human_agent_\d+$/i.test(a)
-    );
-
-  console.log("Has human participation:", hasHuman);
-
-  const numRounds =
-    (getParsedArgsValue(parsedArgsRaw, "experiment.num_rounds", 0) as number) +
-    1;
-  const questionsPerDataset = getParsedArgsValue(
-    parsedArgsRaw,
-    "experiment.num_questions",
-    100
-  ) as number;
-
-  let agentCounts: number[] = [];
-
-  if (Array.isArray(parsedArgs?.["agent_counts"])) {
-    const agentCountsArray = parsedArgs["agent_counts"] as unknown[];
-    agentCounts = agentCountsArray.map((count: unknown) => Number(count));
-  } else {
-    const agentCountObj: Record<number, number> = {};
-    Object.keys(parsedArgs || {}).forEach((key: string) => {
-      const match = key.match(/^agent_counts\.(\d+)$/);
-      if (match && parsedArgs) {
-        const index = parseInt(match[1], 10);
-        agentCountObj[index] = Number(parsedArgs[key]);
-      }
-    });
-
-    const indices = Object.keys(agentCountObj).map(Number);
-    const maxIndex = indices.length > 0 ? Math.max(...indices) : -1;
-    if (maxIndex >= 0) {
-      agentCounts = Array.from(
-        { length: maxIndex + 1 },
-        (_, i) => agentCountObj[i] || 0
-      );
-    }
-  }
-
-  const numAgentsFromCounts =
-    agentCounts.length > 0
-      ? agentCounts.reduce((sum, count) => sum + count, 0)
-      : agents.length; // Fallback to agent list length
-
-  const numAgents = numAgentsFromCounts + (hasHuman ? 1 : 0);
-  const numQuestions = questionsPerDataset * datasets.length;
-
-  console.log("Extracted values:", {
-    numRounds,
-    questionsPerDataset,
-    numQuestions,
-    agentCounts,
-    numAgents,
-  });
-
-  const lastRoundPerformance =
-    data.performance_data?.[data.performance_data.length - 1] || {};
-  const majorityVote = lastRoundPerformance.majority_vote || 0;
-  const isComplete = Boolean(data.is_complete);
-  const completedRuns = data.completed_runs || 0;
-  const availableSeeds: string[] = data.seeds_present
-    ? data.seeds_present.map((s: unknown) => String(s))
-    : ["0"];
-
-  return {
-    id: experimentName,
-    name: experimentName,
-    datasets,
-    agents,
-    status: isComplete ? "completed" : "in-progress",
-    endDate: formatDate(data.last_updated),
-    startDate: formatDate(data.created_at),
-    numAgents,
-    numRounds,
-    numQuestions,
-    hasHuman,
-    availableSeeds,
-    selectedSeed: availableSeeds[0] || "0",
-    performance: {
-      majority_vote: majorityVote,
-      rounds_completed: completedRuns,
-    },
-    rawData: data,
-  };
 };
 
 const parseAgentsFromExperimentName = (name: string): string[] => {
   const agents: string[] = [];
-  if (typeof name !== "string") {
-    console.warn("Invalid experiment name type:", typeof name, name);
-    return ["gpt-4o-mini"];
-  }
-  const nameLower = name.toLowerCase();
-
+  const nameLower = (name || "").toLowerCase();
   if (nameLower.includes("gpt")) agents.push("gpt-4o-mini");
   if (nameLower.includes("mistral")) agents.push("mistral-7b");
-  if (nameLower.includes("meta") || nameLower.includes("llama"))
-    agents.push("llama-3.1-8b-chat");
-  if (nameLower.includes("human")) agents.push("human");
-
-  const matches = nameLower.match(/(\d+)(gpt|mistral|meta)/g);
-  if (matches) {
-    matches.forEach((match) => {
-      const numMatch = match.match(/\d+/);
-      const typeMatch = match.match(/(gpt|mistral|meta)/);
-
-      if (numMatch && typeMatch) {
-        const num = parseInt(numMatch[0]);
-        const type = typeMatch[1];
-
-        for (let i = 0; i < num; i++) {
-          if (type === "gpt" && !agents.includes("gpt-4o-mini"))
-            agents.push("gpt-4o-mini");
-          if (type === "mistral" && !agents.includes("mistral-7b"))
-            agents.push("mistral-7b");
-          if (type === "meta" && !agents.includes("llama-3.1-8b-chat"))
-            agents.push("llama-3.1-8b-chat");
-        }
-      }
-    });
-  }
-
+  if (nameLower.includes("meta") || nameLower.includes("llama")) agents.push("llama-3.1-8b-chat");
   return agents.length > 0 ? agents : ["gpt-4o-mini"];
 };
 
 export {
-  transformExperiment,
   getParsedArgsValue,
   formatDate,
   parseAgentsFromExperimentName,
   mapLLMConfigToDisplayName,
   extractAgentsFromParsedArgs,
+  normalizeDatasetName
 };
 
 export type { ExperimentData, Experiment, ParsedArgs, RunData };

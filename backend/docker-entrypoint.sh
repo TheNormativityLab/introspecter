@@ -1,15 +1,11 @@
 #!/bin/sh
 set -e
 
-PRISMA_DONE_FILE="/app/.prisma_done"
+echo "Pushing database schema..."
+pnpm run db:push
 
-if [ ! -f "$PRISMA_DONE_FILE" ]; then
-  echo "Running Prisma generate and DB push..."
-  pnpm exec prisma generate
-  pnpm exec prisma db push
-  pnpm run migrate-data
-  touch "$PRISMA_DONE_FILE"
-fi
+echo "Running data migration in background..."
+pnpm run migrate-data
 
-echo "Starting backend..."
-exec pnpm run dev
+echo "Starting server..."
+pnpm run start

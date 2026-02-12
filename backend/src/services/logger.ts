@@ -1,52 +1,59 @@
 import { createLogger, format, transports } from 'winston';
 
 const { File, Console } = transports;
-const { combine, timestamp, json, colorize, printf } = format;
+const { combine, timestamp, json, colorize, printf, errors } = format;
+
+const filterInternalMetadata = format((info) => {
+  const { level, message, timestamp, stack, ...rest } = info;
+  const stringifiedRest = JSON.stringify(rest);
+  if (stringifiedRest === '{}') {
+    info.metadata = null;
+  } else {
+    info.metadata = rest;
+  }
+  return info;
+});
+
+const devFormat = printf(({ level, message, timestamp, stack, metadata }) => {
+  const msg = stack || message;
+  let metaString = '';
+  
+  if (metadata && Object.keys(metadata).length > 0) {
+    metaString = `\n${JSON.stringify(metadata, null, 2)}`;
+  }
+  
+  return `${timestamp} ${level}: ${msg}${metaString}`;
+});
 
 const logger = createLogger({
   level: 'info',
+  format: combine(
+    timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    errors({ stack: true }), 
+    filterInternalMetadata()
+  ),
 });
 
 if (process.env.NODE_ENV === 'production') {
   const fileFormat = combine(timestamp(), json());
-  const errTransport = new File({
+  
+  logger.add(new File({
     filename: './logs/error.log',
-    format: fileFormat,
     level: 'error',
-  });
-  const infoTransport = new File({
+    format: fileFormat,
+  }));
+  
+  logger.add(new File({
     filename: './logs/combined.log',
     format: fileFormat,
-  });
-  logger.add(errTransport);
-  logger.add(infoTransport);
+  }));
 } else {
-  const errorStackFormat = format((info) => {
-    if (info.stack) {
-      // log stack traces as error messages
-      logger.log({ level: 'error', message: info.stack.toString() });
-      return false;
-    }
-    return info;
-  });
-
-  // 👇 custom formatter that includes metadata
-  const devFormat = printf(({ level, message, ...meta }) => {
-    let metaString = '';
-    if (Object.keys(meta).length > 0) {
-      metaString = JSON.stringify(meta, null, 2);
-    }
-    return `${level}: ${message} ${metaString}`;
-  });
-
-  const consoleTransport = new Console({
+  logger.add(new Console({
     format: combine(
       colorize(),
-      errorStackFormat(),
       devFormat
     ),
-  });
-  logger.add(consoleTransport);
+  }));
 }
 
 export { logger };

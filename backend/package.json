@@ -3,33 +3,34 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "build": "pnpm exec prisma generate && pnpm exec prisma db push",
-    "start": "node dist/server.js",
-    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "pnpm run db:generate && pnpm exec tsc",
     "db:generate": "pnpm exec prisma generate",
     "db:push": "pnpm exec prisma db push",
-    "db:migrate": "pnpm exec prisma migrate dev",
-    "db:studio": "pnpm exec prisma studio",
-    "db:reset": "pnpm exec prisma migrate reset",
-    "migrate-data": "node src/scripts/db_manager.js"
+    "migrate-data": "node src/scripts/db_manager.js",
+    "start": "node dist/index.js",
+    "prod": "pnpm run build && pnpm run db:push && pnpm run start",
+    "migrate": "pnpm run migrate-data"
   },
   "dependencies": {
-    "@prisma/client": "^6.11.1",
-    "prisma": "^6.11.1",
-    "axios": "^1.11.0",
-    "bcryptjs": "^3.0.2",
-    "commander": "^14.0.0",
+    "@prisma/client": "6.11.1",
+    "axios": "^1.13.4",
     "cors": "^2.8.5",
-    "dotenv": "^16.5.0",
-    "express": "4.16.0",
-    "js-yaml": "^4.1.0",
-    "jsonwebtoken": "^9.0.2",
-    "morgan": "^1.10.0",
-    "ts-node-dev": "^2.0.0",
-    "winston": "^3.17.0"
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "morgan": "^1.10.1",
+    "winston": "^3.19.0"
   },
   "devDependencies": {
-    "@types/node": "^20.10.4",
-    "nodemon": "^3.0.2"
+    "@types/cors": "^2.8.13",
+    "@types/express": "^4.17.17",
+    "@types/node": "^20.0.0",
+    "prisma": "6.11.1",
+    "typescript": "^5.8.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "prisma": "6.11.1",
+      "@prisma/client": "6.11.1"
+    }
   }
 }

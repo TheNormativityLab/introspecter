@@ -83,7 +83,7 @@ const Dashboard = () => {
       const response = await fetch(`/api/all-debates`);
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
-      
+      console.log(data)
       if (data.experiment_groups && Array.isArray(data.experiment_groups)) {
         const transformedExperiments = data.experiment_groups.map(transformExperiment);
         setExperiments(transformedExperiments);

@@ -1,27 +1,23 @@
 import { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
-import { logger } from "../../../../services/logger";
+import { logger } from '../../../../services/logger.js';
 
 const prisma = new PrismaClient();
+
+const debugLog = (msg: string) => {
+  console.error(`[DEBUG] ${new Date().toISOString()} - ${msg}`);
+};
 
 export const getAllDebates = async (
   req: Request,
   res: Response
-): Promise<Response> => {
+): Promise<Response> => {  
   try {
-    logger.info(`Attempt to retrieve all debates`);
-
     const totalDebates = await prisma.debate.count();
+    logger.info(`Total debate records in DB: ${totalDebates}`);
 
     if (totalDebates === 0) {
-      return res.json({
-        success: true,
-        experiment_groups: [],
-        debug: {
-          totalDebates: 0,
-          message: "No debates found in database",
-        },
-      });
+      return res.json({ success: false, experiment_groups: [], debug: { totalDebates: 0 } });
     }
 
     const allDebates = await prisma.debate.findMany({
@@ -39,46 +35,26 @@ export const getAllDebates = async (
         datasetName: true,
         wandbMetadata: true,
         processedAt: true,
-        llmConfigs: {
-          select: {
-            id: true,
-            modelName: true,
-            model: true,
-            apiBase: true,
-            timeout: true,
-            numRetries: true,
-            rpm: true,
-            topP: true,
-            maxTokens: true,
-            temperature: true,
-          },
-        },
+        llmConfigs: { select: { id: true, model: true } },
       },
-      orderBy: {
-        processedAt: "desc",
-      },
+      orderBy: { processedAt: "desc" },
     });
 
-    logger.info(
-      `Found ${allDebates.length} debates with wandb_metadata and seed`
-    );
+    logger.info(`Prisma returned ${allDebates.length} records with metadata/seed`);
+
     const experimentGroups = new Map();
 
     for (const debate of allDebates) {
-      let experimentName = extractExperimentName(
-        debate.wandbMetadata,
-        debate.llmConfigs
-      );
+      let experimentName = extractExperimentName(debate.wandbMetadata, debate.id);
 
       if (!experimentGroups.has(experimentName)) {
-        const expected_seeds = extractExpectedSeeds(debate.wandbMetadata);
+        logger.info(`[GROUPING] Creating NEW group for experiment: "${experimentName}" (ID: ${debate.id})`);
+        const expected_seeds = debate.seed
 
         experimentGroups.set(experimentName, {
           experiment_name: experimentName,
-          dataset_name: debate.datasetName,
-          model_config: {
-            LLM: debate.llmConfigs,
-          },
+          datasets: new Set(), // Initialize a Set to collect all unique dataset names
+          model_config: { LLM: debate.llmConfigs },
           runs: [],
           total_runs: 0,
           completed_runs: 0,
@@ -91,167 +67,98 @@ export const getAllDebates = async (
       }
 
       const group = experimentGroups.get(experimentName);
-
-      group.runs.push({
-        debate_id: debate.id,
-        seed: debate.seed,
-        dataset_name: debate.datasetName,
-        status: debate.status,
-        wandb_metadata: debate.wandbMetadata,
-        processed_at: debate.processedAt,
-      });
-
-      if (debate.seed !== null) {
-        group.seeds_present.add(debate.seed);
+      
+      // Add the current run's dataset name to the Set
+      if (debate.datasetName) {
+        group.datasets.add(debate.datasetName);
       }
 
+      group.runs.push({ debate_id: debate.id, seed: debate.seed, status: debate.status });
+
+      if (debate.seed !== null) group.seeds_present.add(debate.seed);
       group.total_runs++;
       if (debate.status === "completed") group.completed_runs++;
       if (debate.status === "failed") group.failed_runs++;
 
-      if (debate.processedAt > group.last_updated) {
-        group.last_updated = debate.processedAt;
-      }
-      if (debate.processedAt < group.created_at) {
-        group.created_at = debate.processedAt;
-      }
+      if (debate.processedAt > group.last_updated) group.last_updated = debate.processedAt;
+      if (debate.processedAt < group.created_at) group.created_at = debate.processedAt;
     }
 
-    const consolidatedExperiments = Array.from(experimentGroups.values()).map(
-      (group) => {
-        const seedsPresent = Array.from(group.seeds_present)
-          .map(Number)
-          .sort((a: any, b: any) => a - b);
-        const missingSeeds = group.expected_seeds
-          ? group.expected_seeds.filter(
-              (seed: any) => !group.seeds_present.has(seed)
-            )
-          : [];
+    const consolidatedExperiments = Array.from(experimentGroups.values()).map(group => {
+      const seedsPresent = Array.from(group.seeds_present).map(Number).sort((a: number, b: number) => a - b);
+      const success_rate = group.total_runs > 0 
+        ? ((group.completed_runs / group.total_runs) * 100).toFixed(1) + "%" 
+        : "0%";
 
-        const success_rate =
-          group.total_runs > 0
-            ? ((group.completed_runs / group.total_runs) * 100).toFixed(1) + "%"
-            : "0%";
-
-        return {
-          ...group,
-          runs: group.runs.sort((a: any, b: any) => a.seed - b.seed),
-          seeds_present: seedsPresent,
-          missing_seeds: missingSeeds,
-          is_complete: group.runs.every((run: any) => run.status === "completed"),
-          success_rate,
-        };
-      }
-    );
-
-    consolidatedExperiments.sort((a, b) => {
-      const nameA = String(a.experiment_name || "");
-      const nameB = String(b.experiment_name || "");
-
-      const nameCompare = nameA.localeCompare(nameB);
-      if (nameCompare !== 0) return nameCompare;
-
-      const timeA = new Date(a.last_updated).getTime();
-      const timeB = new Date(b.last_updated).getTime();
-
-      return timeB - timeA;
+      return {
+        ...group,
+        // Convert the Set of names to an Array for the JSON response
+        dataset_name: Array.from(group.datasets),
+        // Remove the internal Set from the final output
+        datasets: undefined, 
+        runs: group.runs.sort((a: any, b: any) => a.seed - b.seed),
+        seeds_present: seedsPresent,
+        success_rate,
+      };
     });
 
-    return res.json({
-      success: true,
-      experiment_groups: consolidatedExperiments,
-      debug: {
-        totalDebates,
-        totalExperiments: consolidatedExperiments.length,
-        totalRuns: allDebates.length,
-        experimentNames: consolidatedExperiments.map((exp) => ({
-          name: exp.experiment_name,
-          runs: exp.total_runs,
-          seeds: exp.seeds_present,
-          missing: exp.missing_seeds,
-          complete: exp.is_complete,
-        })),
-      },
-    });
+    logger.info(`Consolidation complete. Found ${consolidatedExperiments.length} unique experiment names.`);
+    debugLog(`Consolidation complete. Found ${consolidatedExperiments.length} experiments`);
+    
+    return res.json({ success: true, experiment_groups: consolidatedExperiments });
+
   } catch (error) {
-    logger.error("Get all debates error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
+    logger.error("!!! FATAL ERROR in getAllDebates !!!", error);
+    debugLog(`ERROR: ${error}`);
+    return res.status(500).json({ success: false, message: "Internal server error" });
   }
 };
 
-function extractExperimentName(wandbMetadata: any, llmConfigs: any[]): string {
-  if (!wandbMetadata || typeof wandbMetadata !== "object") {
-    return llmConfigs
-      .map((c) => c.modelName)
-      .sort()
-      .join("_vs_");
+function extractExperimentName(wandbMetadata: any, id: number): string {
+  // ... (rest of the helper function remains unchanged)
+  logger.info(`[EXTRACT] Processing Debate ID: ${id}`);
+  
+  if (!wandbMetadata) {
+    logger.warn(`Debate ID ${id}: wandbMetadata is null/undefined`);
+    return "unknown_experiment";
   }
 
-  if (
-    Array.isArray(wandbMetadata.parsed_args) &&
-    wandbMetadata.parsed_args.length > 0
-  ) {
-    const firstConfig = wandbMetadata.parsed_args[0];
-    return (
-      firstConfig["experiment.name"] ||
-      llmConfigs
-        .map((c) => c.modelName)
-        .sort()
-        .join("_vs_")
+  let m = wandbMetadata;
+  const topKeys = Object.keys(m);
+  logger.info(`Debate ID ${id}: Top-level keys found: [${topKeys.join(", ")}]`);
+
+  if (m.tags) {
+    const nameTag = m.tags.find((tag: string) =>
+      tag.startsWith("name-")
     );
+
+    if (nameTag) {
+      const result = nameTag.replace(/^name-/, "");
+      logger.info(`Debate ID ${id}: SUCCESS found via tag -> "${result}"`);
+      return result;
+    }
   }
 
-  if (
-    wandbMetadata.parsed_args &&
-    typeof wandbMetadata.parsed_args === "object"
-  ) {
-    return (
-      wandbMetadata.parsed_args["experiment.name"] ||
-      llmConfigs
-        .map((c) => c.modelName)
-        .sort()
-        .join("_vs_")
-    );
+  if (m.parsed_args) {
+    const config = Array.isArray(m.parsed_args) ? m.parsed_args[0] : m.parsed_args;
+    const configKeys = Object.keys(config);
+    logger.info(`Debate ID ${id}: Checking parsed_args keys: [${configKeys.join(", ")}]`);
+
+    const checkKeys = ["experiment_name", "experiment.name", "name", "exp_name"];
+    for (const key of checkKeys) {
+      let val = config[key];
+      if (val && typeof val === 'object' && val.value !== undefined) {
+        val = val.value;
+      }
+      if (val) {
+        logger.info(`Debate ID ${id}: SUCCESS found in parsed_args["${key}"] -> "${val}"`);
+        return String(val);
+      }
+    }
   }
 
-  return llmConfigs
-    .map((c) => c.modelName)
-    .sort()
-    .join("_vs_");
-}
-
-function extractExpectedSeeds(wandbMetadata: any): number[] {
-  if (!wandbMetadata || typeof wandbMetadata !== "object") {
-    return [];
-  }
-
-  let seedRaw: any;
-
-  if (
-    Array.isArray(wandbMetadata.parsed_args) &&
-    wandbMetadata.parsed_args.length > 0
-  ) {
-    return [];
-  }
-
-  if (
-    wandbMetadata.parsed_args &&
-    typeof wandbMetadata.parsed_args === "object"
-  ) {
-    seedRaw = wandbMetadata.parsed_args["seed"];
-  }
-
-  if (seedRaw) {
-    return Array.isArray(seedRaw)
-      ? seedRaw.map(Number)
-      : seedRaw.toString().split(",").map(Number);
-  }
-
-  return [];
+  logger.warn(`Debate ID ${id}: All extraction paths failed. Returning fallback.`);
+  return "unnamed_experiment";
 }
 
 export const getSingleDebate = async (
@@ -260,122 +167,64 @@ export const getSingleDebate = async (
 ): Promise<Response> => {
   try {
     const { experimentName, seed } = req.query;
-    logger.info(
-      `Attempt to retrieve all runs from experiment: ${experimentName} with seed: ${seed}`
-    );
+    logger.info(`Retrieving experiment ${experimentName} seed ${seed}`);
 
-    if (!experimentName) {
+    if (!experimentName || !seed) {
       return res.status(400).json({
         success: false,
-        errors: { experimentName: ["Experiment name is required"] },
+        message: "Missing experiment name or seed",
       });
     }
 
-    if (!seed) {
-      return res.status(400).json({
-        success: false,
-        errors: { seed: ["Seed is required"] },
-      });
-    }
+    const nameValue = Array.isArray(experimentName) ? experimentName[0] : experimentName;
+    const seedNum = Number(Array.isArray(seed) ? seed[0] : seed);
 
-    const experimentNameValue = Array.isArray(experimentName)
-      ? experimentName[0]
-      : experimentName;
-    const seedValue = Array.isArray(seed) ? seed[0] : seed;
-    const seedNumber = Number(seedValue);
-
-    if (isNaN(seedNumber)) {
-      return res.status(400).json({
-        success: false,
-        errors: { seed: ["Seed must be a valid number"] },
-      });
-    }
-
-    const candidateDebates = await prisma.debate.findMany({
+    const candidates = await prisma.debate.findMany({
       where: {
         AND: [
           { wandbMetadata: { not: null } },
-          { seed: seedNumber },
+          { seed: seedNum },
         ],
       },
-      select: {
-        id: true,
-        wandbMetadata: true,
-        llmConfigs: {
-          select: { modelName: true },
-        },
-      },
+      select: { id: true, wandbMetadata: true },
     });
 
-    const targetIds = candidateDebates
-      .filter((debate) => {
-        const debateExperimentName = extractExperimentName(
-          debate.wandbMetadata,
-          debate.llmConfigs
-        );
-        return debateExperimentName === experimentNameValue;
-      })
+    const ids = candidates
+      .filter((d) => extractExperimentName(d.wandbMetadata, d.id) === nameValue)
       .map((d) => d.id);
-
-    if (targetIds.length === 0) {
+      
+    if (ids.length === 0) {
       return res.status(404).json({
         success: false,
-        message: `No runs found for experiment '${experimentNameValue}' with seed ${seedNumber}`,
+        message: "No runs found",
       });
     }
 
-    const matchingDebates = await prisma.debate.findMany({
-      where: {
-        id: { in: targetIds },
-      },
-      include: {
-        llmConfigs: {
-          select: {
-            id: true,
-            modelName: true,
-            model: true,
-            apiBase: true,
-            timeout: true,
-            numRetries: true,
-            rpm: true,
-            topP: true,
-            maxTokens: true,
-            temperature: true,
-          },
-        },
-      },
-      orderBy: {
-        processedAt: "desc",
-      },
+    const matches = await prisma.debate.findMany({
+      where: { id: { in: ids } },
+      orderBy: { processedAt: "desc" },
     });
 
-    const transformedRuns = matchingDebates.map((debate) => ({
-      _id: debate.id,
-      status: debate.status,
-      performance_data: debate.performanceData,
-      result_data: debate.resultData,
-      wandb_metadata: debate.wandbMetadata,
-      seed: debate.seed,
-      dataset_name: debate.datasetName,
-      processedAt: debate.processedAt,
+    const runs = matches.map((d) => ({
+      _id: d.id,
+      status: d.status,
+      performance_data: d.performanceData,
+      result_data: d.resultData,
+      wandb_metadata: d.wandbMetadata,
+      seed: d.seed,
+      dataset_name: d.datasetName,
+      processedAt: d.processedAt,
     }));
 
     return res.json({
       success: true,
-      experiment_name: experimentNameValue,
-      seed: seedNumber,
-      runs: transformedRuns.sort(
-        (a, b) =>
-          new Date(b.processedAt).getTime() - new Date(a.processedAt).getTime()
-      ),
+      experiment_name: nameValue,
+      seed: seedNum,
+      runs,
     });
   } catch (error) {
-    logger.error("Get single debate error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
+    logger.error("Error in getSingleDebate", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
   }
 };
 
@@ -385,112 +234,45 @@ export const getDebateRun = async (
 ): Promise<Response> => {
   try {
     const { debateId } = req.query;
-    logger.info(`Attempt to retrieve debate run with ID: ${debateId}`);
+    const id = Number(Array.isArray(debateId) ? debateId[0] : debateId);
 
-    if (!debateId) {
-      return res.status(400).json({
-        success: false,
-        errors: {
-          debateId: ["Debate ID is required"],
-        },
-      });
-    }
-
-    const idValue = Array.isArray(debateId) ? debateId[0] : debateId;
-    const debateIdNum = Number(idValue);
-
-    if (isNaN(debateIdNum) || debateIdNum <= 0) {
-      return res.status(400).json({
-        success: false,
-        errors: {
-          debateId: ["Debate ID must be a valid positive number"],
-        },
-      });
+    if (isNaN(id)) {
+      return res.status(400).json({ success: false, message: "Invalid ID" });
     }
 
     const debate = await prisma.debate.findUnique({
-      where: {
-        id: debateIdNum,
-      },
+      where: { id },
       include: {
         llmConfigs: {
           select: {
             id: true,
             modelName: true,
             model: true,
-            apiBase: true,
-            timeout: true,
-            numRetries: true,
-            rpm: true,
-            topP: true,
-            maxTokens: true,
-            temperature: true,
           },
         },
       },
     });
 
     if (!debate) {
-      return res.status(404).json({
-        success: false,
-        message: "Debate not found",
-      });
+      return res.status(404).json({ success: false, message: "Not found" });
     }
 
-    if (
-      !debate.wandbMetadata ||
-      (typeof debate.wandbMetadata === "object" &&
-        Object.keys(debate.wandbMetadata).length === 0)
-    ) {
-      return res.status(404).json({
-        success: false,
-        message: "Debate found but has no wandb_metadata",
-      });
-    }
-
-    if (!debate.seed && debate.seed !== 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Debate found but has no seed",
-      });
-    }
-
-    const runDetails = {
+    const details = {
       debate_id: debate.id,
       seed: debate.seed,
       status: debate.status,
       dataset_name: debate.datasetName,
-      model_config: {
-        LLM: debate.llmConfigs.map((config) => ({
-          id: config.id,
-          modelName: config.modelName,
-          model: config.model,
-          apiBase: config.apiBase,
-          timeout: config.timeout,
-          numRetries: config.numRetries,
-          rpm: config.rpm,
-          topP: config.topP,
-          maxTokens: config.maxTokens,
-          temperature: config.temperature,
-        })),
-      },
+      model_config: { LLM: debate.llmConfigs },
       performance_data: debate.performanceData,
       result_data: debate.resultData,
       wandb_metadata: debate.wandbMetadata,
       processed_at: debate.processedAt,
     };
 
-    return res.json({
-      success: true,
-      run_details: runDetails,
-    });
+    return res.json({ success: true, run_details: details });
   } catch (error) {
-    logger.error("Get debate run error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Internal server error",
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
+    logger.error("Error in getDebateRun", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
   }
 };
 
@@ -500,107 +282,23 @@ export const debugDatabase = async (
 ): Promise<Response> => {
   try {
     await prisma.$connect();
-
-    const totalDebates = await prisma.debate.count();
-    const totalLlmConfigs = await prisma.llmConfig.count();
-    const debatesWithWandb = await prisma.debate.count({
-      where: {
-        AND: [
-          { wandbMetadata: { not: null } },
-          { wandbMetadata: { not: {} } },
-        ],
-      },
-    });
-
-    const debatesWithSeed = await prisma.debate.count({
-      where: { seed: { not: null } },
-    });
-
-    const debatesWithDatasetName = await prisma.debate.count({
-      where: { datasetName: { not: null } },
-    });
-
-    const seedCounts = await prisma.debate.groupBy({
-      by: ["seed"],
-      _count: { seed: true },
-      where: { seed: { not: null } },
-      orderBy: { _count: { seed: "desc" } },
-    });
-
-    const statusCounts = await prisma.debate.groupBy({
-      by: ["status"],
-      _count: { status: true },
-      orderBy: { _count: { status: "desc" } },
-    });
-
-    const sampleDebates = await prisma.debate.findMany({
-      where: {
-        AND: [
-          { wandbMetadata: { not: null } },
-          { wandbMetadata: { not: {} } },
-        ],
-      },
-      select: {
-        id: true,
-        status: true,
-        processedAt: true,
-        llmConfigs: {
-          select: {
-            id: true,
-            modelName: true,
-          },
-        },
-      },
-      orderBy: { processedAt: "desc" },
-      take: 5,
-    });
-
-    const sampleLlmConfigs = await prisma.llmConfig.findMany({
-      select: {
-        id: true,
-        modelName: true,
-        model: true,
-        _count: {
-          select: { debates: true },
-        },
-      },
-      orderBy: { id: "asc" },
-      take: 5,
-    });
-
+    const count = await prisma.debate.count();
     return res.json({
       success: true,
-      debug: {
-        totalDebates,
-        totalLlmConfigs,
-        debatesWithWandb,
-        debatesWithSeed,
-        debatesWithDatasetName,
-        seedCounts,
-        statusCounts,
-        sampleDebates,
-        sampleLlmConfigs,
-        connection: "OK",
-        timestamp: new Date().toISOString(),
-      },
+      debug: { count, connection: "OK", time: new Date().toISOString() },
     });
   } catch (error) {
-    logger.error("Database debug error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Database connection or query failed",
-      error: error instanceof Error ? error.message : "Unknown error",
-      timestamp: new Date().toISOString(),
-    });
+    logger.error("Debug error", error);
+    return res.status(500).json({ success: false, message: "Failed" });
   }
 };
 
 export const disconnectPrisma = async (): Promise<void> => {
   try {
     await prisma.$disconnect();
-    logger.info("Prisma client disconnected successfully");
+    logger.info("Disconnected Prisma");
   } catch (error) {
-    logger.error("Error disconnecting Prisma client:", error);
+    logger.error("Disconnect error", error);
   }
 };
 

@@ -45,7 +45,6 @@ export async function GET(req: NextRequest) {
       }
 
       const data = await backendResponse.json();
-      // console.log('Fetched all debates:', data.experiment_groups[5]);
       return NextResponse.json(data);
     } catch (fetchError) {
       console.error("Backend fetch error:", fetchError);

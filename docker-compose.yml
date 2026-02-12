@@ -29,6 +29,7 @@ services:
       - RABBITMQ_PORT=5672
       - RABBITMQ_USER=${RABBITMQ_USER:-guest}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - WANDB_API_KEY=${WANDB_API_KEY}
       - CELERY_BROKER_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@introspecter-rabbitmq:5672//
       - CELERY_RESULT_BACKEND=rpc://
       - PYTHONPATH=/app
@@ -51,7 +52,6 @@ services:
       dockerfile: Dockerfile
     volumes:
       - ${HOST_PROJECT_PATH}:/workspace
-      - ${HOST_PROJECT_PATH}/backend:/app
     env_file:
       - ${HOST_PROJECT_PATH}/.env
     ports:
@@ -63,6 +63,7 @@ services:
       DB_USER: ${INTROSPECTER_BACKEND_DB_USER}
       DB_PASSWORD: ${INTROSPECTER_BACKEND_DB_PASSWORD}
       DB_NAME: ${INTROSPECTER_BACKEND_DB_NAME}
+      WANDB_API_KEY: ${WANDB_API_KEY}
       DATABASE_URL: postgresql://${INTROSPECTER_BACKEND_DB_USER}:${INTROSPECTER_BACKEND_DB_PASSWORD}@introspecter-postgres-backend:5432/${INTROSPECTER_BACKEND_DB_NAME}
       FASTAPI_BASE_URL: http://introspecter-api:3001
     healthcheck:
@@ -70,7 +71,7 @@ services:
       interval: 15s 
       timeout: 10s
       retries: 15
-      start_period: 300s
+      start_period: 600s
     depends_on:
       introspecter-postgres-backend:
         condition: service_healthy
@@ -126,6 +127,7 @@ services:
       - DB_PASSWORD=${INTROSPECTER_API_DB_PASSWORD}
       - DB_NAME=${INTROSPECTER_API_DB_NAME}
       - DATABASE_URL=postgresql+asyncpg://${INTROSPECTER_API_DB_USER}:${INTROSPECTER_API_DB_PASSWORD}@introspecter-postgres-api:5432/${INTROSPECTER_API_DB_NAME}
+      - WANDB_API_KEY=${WANDB_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - KSCOPE_API_KEY=${KSCOPE_API_KEY}
       - KSCOPE_API_BASE=${KSCOPE_API_BASE}
@@ -168,6 +170,7 @@ services:
       - DB_PASSWORD=${INTROSPECTER_API_DB_PASSWORD}
       - DB_NAME=${INTROSPECTER_API_DB_NAME}
       - DATABASE_URL=postgresql+asyncpg://${INTROSPECTER_API_DB_USER}:${INTROSPECTER_API_DB_PASSWORD}@introspecter-postgres-api:5432/${INTROSPECTER_API_DB_NAME}
+      - WANDB_API_KEY=${WANDB_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - KSCOPE_API_KEY=${KSCOPE_API_KEY}
       - KSCOPE_API_BASE=${KSCOPE_API_BASE}
@@ -193,29 +196,29 @@ services:
   # -------------------------------
   # Flower (Celery Monitoring)
   # -------------------------------
-  introspecter-flower:
-    container_name: introspecter-flower
-    build:
-      context: ${HOST_PROJECT_PATH}/api
-      dockerfile: Dockerfile
-    working_dir: /app
-    command: celery -A src.api.celery_app flower --port=5555
-    ports:
-      - "5555:5555"
-    volumes:
-      - ${HOST_PROJECT_PATH}/api:/app
-    env_file:
-      - ${HOST_PROJECT_PATH}/.env
-    environment:
-      - CELERY_BROKER_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@introspecter-rabbitmq:5672//
-      - CELERY_RESULT_BACKEND=rpc://
-      - PYTHONPATH=/app
-    depends_on:
-      introspecter-rabbitmq:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - introspecter-network
+  # introspecter-flower:
+  #   container_name: introspecter-flower
+  #   build:
+  #     context: ${HOST_PROJECT_PATH}/api
+  #     dockerfile: Dockerfile
+  #   working_dir: /app
+  #   command: celery -A src.api.celery_app flower --port=5555
+  #   ports:
+  #     - "5555:5555"
+  #   volumes:
+  #     - ${HOST_PROJECT_PATH}/api:/app
+  #   env_file:
+  #     - ${HOST_PROJECT_PATH}/.env
+  #   environment:
+  #     - CELERY_BROKER_URL=amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@introspecter-rabbitmq:5672//
+  #     - CELERY_RESULT_BACKEND=rpc://
+  #     - PYTHONPATH=/app
+  #   depends_on:
+  #     introspecter-rabbitmq:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   networks:
+  #     - introspecter-network
   # -------------------------------
   # Postgres for API
   # -------------------------------

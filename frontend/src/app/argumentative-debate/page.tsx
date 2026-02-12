@@ -3,36 +3,39 @@ import { useRouter } from "next/navigation";
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   BookOpen, 
-  Scroll, 
   ArrowLeft, 
   Quote, 
-  Bot, 
-  PenTool, 
-  PlusCircle, 
+  ChevronLeft, 
+  ChevronRight, 
   Loader2, 
-  X, 
   Shuffle, 
-  Send 
+  Send,
+  User,
+  Bot,
+  PenTool,
+  PlusCircle,
+  X
 } from 'lucide-react';
 import data from '@/utils/data.json';
 
-type JsonCitation = {
+type StatementSegment = {
+  id: string;
   text: string;
-  span: number[];
-};
-
-type JsonDebater = {
-  claim: string;
-  arguments: string[]; 
+  highlighted: boolean;
+  storySpan?: [number, number];
 };
 
 type JsonDebate = {
+  summary: string;
+  beforeStory: string;
   story: string;
+  afterStory: string;
   question: string;
-  debater1: JsonDebater;
-  debater2: JsonDebater;
-  judge: any;
-  citations: JsonCitation[];
+  debaterClaim: string;
+  altClaim: string;
+  beforeDebate: string[];
+  debaterStatement: StatementSegment[];
+  afterDebate: string[];
 };
 
 type Citation = {
@@ -54,10 +57,24 @@ type ConversationTurn = {
 
 const DEBATE_DATA = data as { debates: JsonDebate[] };
 
+const ResizeHandle = ({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) => (
+  <div 
+    className="w-4 flex items-center justify-center cursor-col-resize hover:bg-slate-200 transition-colors flex-shrink-0 z-10 group bg-slate-50 border-x border-slate-200"
+    onMouseDown={onMouseDown}
+  >
+    <div className="w-1 h-8 bg-slate-300 rounded-full group-hover:bg-blue-400 transition-colors" />
+  </div>
+);
+
 export default function DebateGenerator() {
   const router = useRouter();
+  
   const [isLoaded, setIsLoaded] = useState(false);
+  // Track the current index to avoid picking the same one twice
+  const [currentIndex, setCurrentIndex] = useState<number | null>(null);
+
   const [story, setStory] = useState("");
+  const [summary, setSummary] = useState("");
   const [question, setQuestion] = useState("");
   const [debater1Stance, setDebater1Stance] = useState(""); 
   const [debater2Stance, setDebater2Stance] = useState(""); 
@@ -69,9 +86,48 @@ export default function DebateGenerator() {
    
   const [citations, setCitations] = useState<Citation[]>([]);
   const [activeCitationId, setActiveCitationId] = useState<string | null>(null);
+  
+  const [paneSplit, setPaneSplit] = useState<number>(75);
+  
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const storyContainerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const hasInitialized = useRef(false);
+  const isDragging = useRef<boolean>(false);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const relativeX = e.clientX - rect.left;
+      const percentage = (relativeX / rect.width) * 100;
+      setPaneSplit(Math.min(Math.max(percentage, 20), 80));
+    };
+
+    const handleMouseUp = () => {
+      isDragging.current = false;
+      document.body.style.cursor = 'default';
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeCitationId) {
+      const activeCitation = citations.find(c => c.id === activeCitationId);
+      if (activeCitation) {
+        const el = document.getElementById(`citation-source-${activeCitation.sourceId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }
+    }
+  }, [activeCitationId, citations]);
 
   const fetchAIResponseStream = async (
     payload: any,
@@ -168,8 +224,8 @@ export default function DebateGenerator() {
       type: 'opening',
       story: debateData.story,
       question: debateData.question,
-      ai_claim: debateData.debater1.claim,
-      human_claim: debateData.debater2.claim
+      ai_claim: debateData.debaterClaim,
+      human_claim: debateData.altClaim
     };
     
     try {
@@ -189,20 +245,33 @@ export default function DebateGenerator() {
 
   const loadRandomCase = () => {
     if (!DEBATE_DATA.debates || DEBATE_DATA.debates.length === 0) return;
-    const randomIndex = Math.floor(Math.random() * DEBATE_DATA.debates.length);
+    
+    // [UPDATED] Logic to ensure we pick a NEW index if possible
+    let randomIndex = Math.floor(Math.random() * DEBATE_DATA.debates.length);
+    if (DEBATE_DATA.debates.length > 1 && randomIndex === currentIndex) {
+        randomIndex = (randomIndex + 1) % DEBATE_DATA.debates.length;
+    }
+    
+    setCurrentIndex(randomIndex);
     const selectedDebate = DEBATE_DATA.debates[randomIndex];
     
-    setStory(selectedDebate.story);
+    const fullStoryText = `${selectedDebate.beforeStory}\n\n${selectedDebate.story}\n\n${selectedDebate.afterStory}`;
+
+    // Resetting ALL state relevant to the new round
+    setIsGenerating(false); 
+    setStreamingText("");
+    setStory(fullStoryText);
+    setSummary(selectedDebate.summary);
     setQuestion(selectedDebate.question);
-    
-    setDebater1Stance(selectedDebate.debater1.claim); 
-    setDebater2Stance(selectedDebate.debater2.claim); 
+    setDebater1Stance(selectedDebate.debaterClaim); 
+    setDebater2Stance(selectedDebate.altClaim); 
     setCitations([]);
     setConversationHistory([]);
     setDebaterDraft("");
-    setIsLoaded(true);
     setActiveRoundIndex(0);
+    setIsLoaded(true);
     
+    // Trigger AI generation
     generateOpeningArgument(selectedDebate);
   };
 
@@ -217,7 +286,102 @@ export default function DebateGenerator() {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   };
 
- const renderHighlightedStory = () => {
+  const insertCitationIntoDraft = (sourceId: number) => {
+    if (!textAreaRef.current) return;
+    const textarea = textAreaRef.current;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const text = textarea.value;
+    const insertion = ` [${sourceId}] `;
+    const newText = text.substring(0, start) + insertion + text.substring(end);
+    setDebaterDraft(newText);
+    setTimeout(() => {
+      textarea.focus();
+      textarea.setSelectionRange(start + insertion.length, start + insertion.length);
+    }, 0);
+  };
+
+  const addManualCitation = (text: string) => {
+    if (!text || text.trim().length === 0) return;
+    
+    const newId = citations.length > 0 
+      ? Math.max(...citations.map(c => c.sourceId)) + 1 
+      : 1;
+    
+    const newCitation: Citation = {
+      id: `cit-manual-${Date.now()}`,
+      sourceId: newId,
+      text: text.trim()
+    };
+    setCitations(prev => [...prev, newCitation]);
+    insertCitationIntoDraft(newId);
+  };
+
+  const removeCitation = (idToRemove: string) => {
+    setCitations(prev => prev.filter(c => c.id !== idToRemove));
+  };
+
+  const handleHumanSubmit = async () => {
+    if (!debaterDraft.trim()) return; 
+    const currentDraft = debaterDraft;
+    
+    const updatedHistory: ConversationTurn[] = [
+      ...conversationHistory, 
+      { speaker: 'human', args: [], draft: currentDraft }
+    ];
+    setConversationHistory(updatedHistory);
+    setIsGenerating(true);
+    setStreamingText("");
+    setDebaterDraft("");
+
+    const payload = {
+      type: 'rebuttal', 
+      story: story,
+      question: question,
+      ai_claim: debater1Stance,
+      human_claim: debater2Stance,
+      history: updatedHistory,
+      human_latest_argument: currentDraft
+    };
+
+    try {
+      const newArgs = await fetchAIResponse(
+        payload,
+        (currentText) => setStreamingText(currentText)
+      );
+      setConversationHistory(prev => [...prev, { speaker: 'ai', args: newArgs }]);
+    } catch (error) {
+      console.error("Failed to generate response:", error);
+      setConversationHistory(prev => [...prev, { speaker: 'ai', args: [{ text: "Error generating response." }] }]);
+    } finally {
+      setStreamingText("");
+      setIsGenerating(false);
+    }
+  };
+
+  const rounds = useMemo(() => {
+    const roundsList = [];
+    const totalTurns = conversationHistory.length;
+    
+    for (let i = 0; i < totalTurns; i += 2) {
+      roundsList.push({
+        ai: conversationHistory[i],
+        human: conversationHistory[i+1] || null
+      });
+    }
+
+    if (totalTurns % 2 === 0 && isGenerating) {
+        roundsList.push({ ai: null, human: null });
+    }
+    
+    return roundsList;
+  }, [conversationHistory, isGenerating]);
+
+  useEffect(() => {
+    setActiveRoundIndex(Math.max(0, rounds.length - 1));
+  }, [rounds.length]);
+
+  const renderHighlightedStory = () => {
     if (!story) return null;
     
     const sortedCitations = [...citations].sort((a, b) => b.text.length - a.text.length);
@@ -250,7 +414,7 @@ export default function DebateGenerator() {
     });
 
     return (
-      <div className="text-slate-600 leading-relaxed text-justify whitespace-pre-wrap">
+      <div className="text-slate-600 leading-relaxed text-justify whitespace-pre-wrap font-serif">
         {parts.map((part, i) => {
           if (part.highlight) {
              const isAiSource = part.id?.startsWith('cit-ai');
@@ -268,10 +432,8 @@ export default function DebateGenerator() {
                   `}
                   onMouseEnter={() => setActiveCitationId(part.id)}
                   onMouseLeave={() => setActiveCitationId(null)}
-                  onMouseUp={handleStoryTextSelect}
                   onClick={(e) => {
-                    const selection = window.getSelection();
-                    if (selection && selection.toString().length > 0) return;
+                    e.stopPropagation();
                     if(part.sourceId) insertCitationIntoDraft(part.sourceId);
                   }}
                 >
@@ -280,7 +442,24 @@ export default function DebateGenerator() {
                 </span>
              );
           }
-          return <span key={i} onMouseUp={handleStoryTextSelect}>{part.text}</span>;
+          
+          const sentences = part.text.match(/[^.!?]+[.!?]+["']?|[^.!?]+$/g) || [part.text];
+          return (
+            <React.Fragment key={i}>
+                {sentences.map((sentence, sIdx) => (
+                    <span 
+                        key={sIdx}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            addManualCitation(sentence);
+                        }}
+                        className="hover:bg-yellow-100 cursor-pointer transition-colors rounded px-0.5"
+                    >
+                        {sentence}
+                    </span>
+                ))}
+            </React.Fragment>
+          );
         })}
       </div>
     );
@@ -339,322 +518,218 @@ export default function DebateGenerator() {
     );
   };
 
-  const handleStoryTextSelect = () => {
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) return;
-    const text = selection.toString().trim();
-    if (text.length > 10) {
-      const newId = citations.length > 0 
-        ? Math.max(...citations.map(c => c.sourceId)) + 1 
-        : 1;
-      
-      const newCitation: Citation = {
-        id: `cit-manual-${Date.now()}`,
-        sourceId: newId,
-        text: text
-      };
-      setCitations([...citations, newCitation]);
-      selection.removeAllRanges();
-    }
-  };
-
-  const removeCitation = (idToRemove: string) => {
-    setCitations(prev => prev.filter(c => c.id !== idToRemove));
-  };
-
-  const handleHumanSubmit = async () => {
-    if (!debaterDraft.trim()) return; 
-    const currentDraft = debaterDraft;
-    
-    const updatedHistory: ConversationTurn[] = [
-      ...conversationHistory, 
-      { speaker: 'human', args: [], draft: currentDraft }
-    ];
-    setConversationHistory(updatedHistory);
-    setIsGenerating(true);
-    setStreamingText("");
-    setDebaterDraft("");
-
-    const payload = {
-      type: 'rebuttal', 
-      story: story,
-      question: question,
-      ai_claim: debater1Stance,
-      human_claim: debater2Stance,
-      history: updatedHistory,
-      human_latest_argument: currentDraft
-    };
-
-    try {
-      const newArgs = await fetchAIResponse(
-        payload,
-        (currentText) => setStreamingText(currentText)
-      );
-      setConversationHistory(prev => [...prev, { speaker: 'ai', args: newArgs }]);
-    } catch (error) {
-      console.error("Failed to generate response:", error);
-      setConversationHistory(prev => [...prev, { speaker: 'ai', args: [{ text: "Error generating response." }] }]);
-    } finally {
-      setStreamingText("");
-      setIsGenerating(false);
-    }
-  };
-
-  const insertCitationIntoDraft = (sourceId: number) => {
-    if (!textAreaRef.current) return;
-    const textarea = textAreaRef.current;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const text = textarea.value;
-    const insertion = ` [${sourceId}] `;
-    const newText = text.substring(0, start) + insertion + text.substring(end);
-    setDebaterDraft(newText);
-    setTimeout(() => {
-      textarea.focus();
-      textarea.setSelectionRange(start + insertion.length, start + insertion.length);
-    }, 0);
-  };
-
-  const rounds = useMemo(() => {
-    const roundsList = [];
-    const totalTurns = conversationHistory.length;
-    
-    for (let i = 0; i < totalTurns; i += 2) {
-      roundsList.push({
-        ai: conversationHistory[i],
-        human: conversationHistory[i+1] || null
-      });
-    }
-
-    if (totalTurns % 2 === 0 && isGenerating) {
-        roundsList.push({ ai: null, human: null });
-    }
-    
-    return roundsList;
-  }, [conversationHistory, isGenerating]);
-
-  useEffect(() => {
-    setActiveRoundIndex(Math.max(0, rounds.length - 1));
-  }, [rounds.length]);
-
-  if (!isLoaded) return <div className="h-screen flex items-center justify-center gap-2"><Loader2 className="animate-spin"/> Loading Case...</div>;
+  if (!isLoaded) return <div className="h-screen flex items-center justify-center gap-2 text-slate-500"><Loader2 className="animate-spin"/> Loading Case...</div>;
 
   return (
-    <div className="h-screen w-full bg-[#f8fafc] flex font-sans text-slate-800 overflow-hidden relative">
-      <nav className="w-20 bg-white flex-shrink-0 flex flex-col items-center border-r border-slate-200 py-4 gap-4 z-20">
-        <button className="w-10 h-10 rounded-xl flex items-center justify-center bg-slate-900 text-white hover:bg-blue-600 transition-all shadow-md cursor-pointer" onClick={() => router.push('/dashboard')}>
+    <div className="h-screen w-full bg-[#f8fafc] flex font-sans text-slate-800 overflow-hidden">
+      
+      <nav className="w-16 bg-white flex-shrink-0 flex flex-col items-center border-r border-slate-200 py-4 gap-4 z-20 shadow-sm">
+        <button onClick={() => router.push('/dashboard')} className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 transition-colors text-slate-600">
            <ArrowLeft size={20} />
         </button>
-        <div className="w-8 h-[1px] bg-slate-100" />
-        <button onClick={loadRandomCase} className="w-10 h-10 rounded-xl flex items-center justify-center bg-white text-slate-400 border border-slate-200 hover:bg-slate-50 hover:text-blue-600 transition-all cursor-pointer" title="Load Random Story">
-           <Shuffle size={20} />
+        <div className="w-8 h-[1px] bg-slate-100 my-2" />
+        <button onClick={loadRandomCase} className="w-10 h-10 rounded-full flex items-center justify-center bg-white text-slate-400 border border-slate-200 hover:border-blue-300 hover:text-blue-600 transition-all shadow-sm" title="New Case">
+           <Shuffle size={18} />
         </button>
       </nav>
 
-      <div className="flex-1 flex flex-col min-h-0 bg-white">
-        <div className="flex-1 grid grid-cols-12 min-h-0 divide-x divide-slate-200">
-          
-          <aside className="col-span-12 md:col-span-3 flex flex-col bg-slate-50/50 min-h-0">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-slate-50/95 backdrop-blur z-10">
-              <div className="flex items-center gap-2">
-                <Scroll size={14} className="text-slate-500"/>
-                <h3 className="text-xs font-bold text-slate-500 uppercase">Context Story</h3>
-              </div>
-              <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">
-                Select to Cite
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto p-6 scrollbar-thin scrollbar-thumb-slate-200" ref={storyContainerRef}>
-              {renderHighlightedStory()}
-            </div>
-          </aside>
-
-          <main className="col-span-12 md:col-span-6 flex flex-col bg-white min-h-0">
-            <div className="p-6 border-b border-slate-100 bg-white z-10">
-              <div className="space-y-4">
-                <div>
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block">Debate Question</span>
-                  <div className="w-full text-lg font-semibold text-slate-800 leading-snug">{question}</div>
+      <div ref={containerRef} className="flex-1 flex min-h-0 bg-white">
+        
+        <div style={{ width: `${paneSplit}%` }} className="flex flex-col min-w-[400px] bg-slate-50/50">
+            
+            <div className="bg-white border-b border-slate-200 p-4 shadow-sm z-10 flex flex-col gap-4">
+                <div className="flex justify-between items-start">
+                    <div className="flex-1">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Debate Generator</span>
+                        <h2 className="text-lg font-bold text-slate-800 leading-tight">{question}</h2>
+                    </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-6 pt-2">
-                   <div className="bg-blue-50/50 p-3 rounded-lg border border-blue-100/50">
-                     <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-1 block">Debater 1 (AI)</span>
-                     <div className="text-sm font-medium text-slate-700 leading-relaxed">{debater1Stance}</div>
-                   </div>
-                   <div className="bg-rose-50/50 p-3 rounded-lg border border-rose-100/50">
-                     <span className="text-[10px] font-bold text-rose-400 uppercase tracking-widest mb-1 block">Debater 2 (You)</span>
-                     <div className="text-sm font-medium text-slate-700 leading-relaxed">{debater2Stance}</div>
-                   </div>
+                <div className="grid grid-cols-2 gap-8 max-w-5xl mx-auto w-full">
+                    <div className="bg-blue-50 p-3 rounded-lg border border-blue-100">
+                        <span className="text-[10px] font-bold text-blue-500 uppercase tracking-wider block mb-1">Debater 1 (AI)</span>
+                        <p className="text-sm font-medium text-slate-800 leading-snug">{debater1Stance}</p>
+                    </div>
+                    <div className="bg-rose-50 p-3 rounded-lg border border-rose-100">
+                        <span className="text-[10px] font-bold text-rose-500 uppercase tracking-wider block mb-1">Debater 2 (You)</span>
+                        <p className="text-sm font-medium text-slate-800 leading-snug">{debater2Stance}</p>
+                    </div>
                 </div>
 
-                <div className="flex gap-2 border-b border-slate-100 pb-1 overflow-x-auto no-scrollbar">
-                     {rounds.map((_, idx) => (
-                         <button
-                            key={idx}
-                            onClick={() => setActiveRoundIndex(idx)}
-                            className={`px-4 py-2 text-xs font-bold uppercase tracking-wide rounded-t-lg transition-all ${
-                                activeRoundIndex === idx 
-                                ? 'bg-slate-800 text-white' 
-                                : 'bg-slate-50 text-slate-400 hover:bg-slate-100'
-                            }`}
-                         >
-                            Round {idx + 1}
-                         </button>
-                     ))}
+                <div className="flex items-center justify-between bg-slate-100 p-1.5 rounded-lg border border-slate-200 w-full max-w-xs mx-auto">
+                    <button 
+                        onClick={() => setActiveRoundIndex(Math.max(0, activeRoundIndex - 1))}
+                        disabled={activeRoundIndex === 0}
+                        className="p-2 hover:bg-white rounded-md disabled:opacity-30 transition-all shadow-sm text-slate-600"
+                    >
+                        <ChevronLeft size={16} />
+                    </button>
+                    <span className="text-xs font-mono font-medium text-slate-500">
+                        ROUND {activeRoundIndex + 1} / {Math.max(1, rounds.length)}
+                    </span>
+                    <button 
+                        onClick={() => setActiveRoundIndex(Math.min(rounds.length - 1, activeRoundIndex + 1))}
+                        disabled={activeRoundIndex >= rounds.length - 1}
+                        className="p-2 hover:bg-white rounded-md disabled:opacity-30 transition-all shadow-sm text-slate-600"
+                    >
+                        <ChevronRight size={16} />
+                    </button>
                 </div>
-              </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 py-6 scrollbar-thin scrollbar-thumb-slate-200">
-               <div className="grid grid-cols-2 gap-6 items-stretch min-h-full">
-                   
-                   <div className="flex flex-col gap-4">
-                       <div className="flex items-center gap-2 pb-2 border-b border-blue-100">
-                            <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center border border-white shadow-sm">
-                                <Bot size={12} />
-                            </div>
-                            <span className="text-xs font-bold text-blue-600 uppercase tracking-wide">Debater 1 (AI)</span>
-                       </div>
-
-                       {rounds[activeRoundIndex]?.ai ? (
-                           <div className="bg-white border border-blue-100 p-4 rounded-xl shadow-sm h-full">
-                               <div className="space-y-4">
-                                   {rounds[activeRoundIndex].ai.args.map((arg, i) => (
-                                       <p key={i} className="text-sm text-slate-600 leading-7">
-                                           {renderMessageContent(arg.text, 'ai')}
-                                       </p>
-                                   ))}
-                               </div>
-                           </div>
-                       ) : isGenerating && !rounds[activeRoundIndex]?.human ? (
-                            <div className="bg-white border border-blue-100 p-4 rounded-xl shadow-sm h-full">
-                                <div className="flex items-center gap-2 mb-3 text-blue-500">
-                                    <Loader2 size={14} className="animate-spin" />
-                                    <span className="text-xs font-bold uppercase">AI is thinking...</span>
+            <div className="flex-1 overflow-y-auto px-6 py-6 scrollbar-thin scrollbar-thumb-slate-300">
+                <div className="grid grid-cols-2 gap-8 max-w-5xl mx-auto h-full content-start">
+                    
+                    <div className="flex flex-col h-full">
+                        <div className="flex-1">
+                            {rounds[activeRoundIndex]?.ai ? (
+                                <div className="bg-blue-50 border border-blue-100 p-5 rounded-xl rounded-tl-none shadow-sm h-full relative group">
+                                    <div className="absolute -top-3 -left-2 p-1 bg-white rounded-full border border-slate-200 shadow-sm text-blue-500">
+                                        <Bot size={14} />
+                                    </div>
+                                    <div className="space-y-4">
+                                        {rounds[activeRoundIndex].ai.args.map((arg, i) => (
+                                            <p key={i} className="text-sm text-slate-700 leading-relaxed">
+                                                {renderMessageContent(arg.text, 'ai')}
+                                            </p>
+                                        ))}
+                                    </div>
                                 </div>
-                                <p className="text-sm text-slate-600 leading-7">
-                                    {renderMessageContent(streamingText, 'ai')}
-                                    <span className="inline-block w-1 h-4 bg-blue-500 ml-1 animate-pulse align-middle"></span>
-                                </p>
-                            </div>
-                       ) : (
-                           <div className="h-full min-h-[500px] border-2 border-dashed border-slate-100 rounded-xl flex flex-col items-center justify-center text-slate-300 gap-2">
-                               <Bot size={24} className="opacity-50" />
-                               <span className="text-xs font-medium uppercase tracking-wide">Waiting...</span>
-                           </div>
-                       )}
-                   </div>
+                            ) : isGenerating && !rounds[activeRoundIndex]?.human ? (
+                                <div className="bg-blue-50 border border-blue-100 p-5 rounded-xl rounded-tl-none shadow-sm h-full relative group animate-pulse">
+                                    <div className="absolute -top-3 -left-2 p-1 bg-white rounded-full border border-slate-200 shadow-sm text-blue-500">
+                                        <Loader2 size={14} className="animate-spin" />
+                                    </div>
+                                    <p className="text-sm text-slate-700 leading-relaxed">
+                                        {renderMessageContent(streamingText, 'ai')}
+                                    </p>
+                                </div>
+                            ) : (
+                                <div className="h-full flex items-center justify-center text-slate-300 text-sm italic">Waiting...</div>
+                            )}
+                        </div>
+                    </div>
 
-                   <div className="flex flex-col gap-4 h-full">
-                       <div className="flex items-center gap-2 pb-2 border-b border-rose-100">
-                            <div className="w-6 h-6 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center border border-white shadow-sm">
-                                <PenTool size={12} />
-                            </div>
-                            <span className="text-xs font-bold text-rose-600 uppercase tracking-wide">Debater 2 (You)</span>
-                       </div>
-                       
-                       {rounds[activeRoundIndex]?.human ? (
-                           <div className="bg-white border border-rose-100 p-4 rounded-xl shadow-sm h-full">
-                               <p className="text-sm text-slate-700 leading-7">
-                                  {renderMessageContent(rounds[activeRoundIndex].human.draft || "", 'human')}
-                               </p>
-                           </div>
-                       ) : (
-                           <div className="bg-white border border-rose-200 p-1 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-rose-100 transition-all flex flex-col flex-1 h-full">
-                               <textarea 
-                                  ref={textAreaRef}
-                                  value={debaterDraft}
-                                  onChange={(e) => setDebaterDraft(e.target.value)}
-                                  placeholder={activeRoundIndex === 0 ? "Write your rebuttal..." : "Write your rebuttal..."}
-                                  className="w-full flex-1 p-4 text-sm text-slate-700 leading-7 resize-none focus:outline-none rounded-t-xl"
-                               />
-                               <div className="p-2 flex justify-between items-center bg-rose-50/50 rounded-b-xl border-t border-rose-100">
-                                   <span className="text-[10px] text-rose-400 font-medium pl-2">
-                                       Highlight story to cite
-                                   </span>
-                                   <button 
-                                      onClick={handleHumanSubmit}
-                                      disabled={!debaterDraft.trim() || isGenerating}
-                                      className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all ${
-                                         !debaterDraft.trim() || isGenerating 
-                                         ? 'bg-slate-200 text-slate-400' 
-                                         : 'bg-rose-600 text-white hover:bg-rose-700 shadow-sm'
-                                      }`}
-                                   >
-                                      <Send size={12} /> Submit
-                                   </button>
-                               </div>
-                           </div>
-                       )}
-                   </div>
-
-               </div>
+                    <div className="flex flex-col h-full">
+                        <div className="flex-1">
+                            {rounds[activeRoundIndex]?.human ? (
+                                <div className="bg-rose-50 border border-rose-100 p-5 rounded-xl rounded-tr-none shadow-sm h-full relative group">
+                                    <div className="absolute -top-3 -right-2 p-1 bg-white rounded-full border border-slate-200 shadow-sm text-rose-500">
+                                        <User size={14} />
+                                    </div>
+                                    <p className="text-sm text-slate-700 leading-relaxed">
+                                        {renderMessageContent(rounds[activeRoundIndex].human.draft || "", 'human')}
+                                    </p>
+                                </div>
+                            ) : (
+                                <div className="bg-white border border-rose-200 p-1 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-rose-100 transition-all flex flex-col h-full min-h-[300px]">
+                                    <div className="absolute -top-3 -right-2 p-1 bg-white rounded-full border border-slate-200 shadow-sm text-rose-500 z-10">
+                                        <PenTool size={14} />
+                                    </div>
+                                    <textarea 
+                                        ref={textAreaRef}
+                                        value={debaterDraft}
+                                        onChange={(e) => setDebaterDraft(e.target.value)}
+                                        placeholder="Draft your argument here..."
+                                        className="w-full flex-1 p-4 text-sm text-slate-700 leading-relaxed resize-none focus:outline-none rounded-t-xl"
+                                    />
+                                    <div className="p-2 flex justify-between items-center bg-rose-50/50 rounded-b-xl border-t border-rose-100">
+                                        <span className="text-[10px] text-rose-400 font-medium pl-2">
+                                            Highlight story text to cite
+                                        </span>
+                                        <button 
+                                            onClick={handleHumanSubmit}
+                                            disabled={!debaterDraft.trim() || isGenerating}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all ${
+                                                !debaterDraft.trim() || isGenerating 
+                                                ? 'bg-slate-200 text-slate-400' 
+                                                : 'bg-rose-600 text-white hover:bg-rose-700 shadow-sm'
+                                            }`}
+                                        >
+                                            <Send size={12} /> Submit
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
             </div>
-          </main>
 
-          <aside className="col-span-12 md:col-span-3 flex flex-col bg-slate-50/50 min-h-0">
-            <div className="p-4 border-b border-slate-100 flex items-center gap-2 sticky top-0 bg-slate-50/95 backdrop-blur z-10">
-              <BookOpen size={14} className="text-slate-500"/>
-              <h3 className="text-xs font-bold text-slate-500 uppercase">Evidence Bank</h3>
+            <div className="h-48 border-t border-slate-200 bg-white flex flex-col shadow-[0_-5px_20px_-5px_rgba(0,0,0,0.05)] z-10">
+                <div className="px-4 py-2 border-b border-slate-100 flex items-center gap-2 bg-slate-50">
+                    <Quote size={14} className="text-slate-400" />
+                    <span className="text-xs font-bold text-slate-500 uppercase">Evidence Bank</span>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                    {citations.length === 0 ? (
+                        <div className="text-center p-8 flex flex-col items-center justify-center opacity-50">
+                            <PlusCircle size={20} className="text-slate-400 mb-2"/>
+                            <p className="text-slate-500 text-xs">Highlight text in the story to add evidence.</p>
+                        </div>
+                    ) : (
+                        citations.map((citation) => {
+                            const isAiSource = citation.id.startsWith('cit-ai');
+                            const activeClass = isAiSource 
+                                ? 'bg-blue-50 border-blue-200 text-slate-800 shadow-md transform scale-[1.01]' 
+                                : 'bg-rose-50 border-rose-200 text-slate-800 shadow-md transform scale-[1.01]';
+                            
+                            return (
+                                <div 
+                                    key={citation.id}
+                                    id={`citation-card-${citation.id}`}
+                                    onClick={() => insertCitationIntoDraft(citation.sourceId)}
+                                    onMouseEnter={() => setActiveCitationId(citation.id)}
+                                    onMouseLeave={() => setActiveCitationId(null)}
+                                    className={`
+                                        p-3 rounded-lg border text-sm cursor-pointer transition-all duration-200 group relative
+                                        ${activeCitationId === citation.id ? activeClass : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'}
+                                    `}
+                                >
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); removeCitation(citation.id); }}
+                                        className="absolute top-2 right-2 p-1 text-slate-300 hover:text-red-500 rounded-full transition-colors opacity-0 group-hover:opacity-100"
+                                    >
+                                        <X size={12} />
+                                    </button>
+                                    <div className="flex items-start gap-3">
+                                        <span className={`
+                                            flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-[10px] font-bold mt-0.5 transition-colors
+                                            ${activeCitationId === citation.id 
+                                                ? (isAiSource ? 'bg-blue-500 text-white' : 'bg-rose-500 text-white') 
+                                                : 'bg-slate-100 text-slate-500'}
+                                        `}>
+                                            {citation.sourceId}
+                                        </span>
+                                        <p className="leading-snug italic font-medium text-xs line-clamp-2 pr-4">"{citation.text}"</p>
+                                    </div>
+                                </div>
+                            );
+                        })
+                    )}
+                </div>
+            </div>
+        </div>
+
+        <ResizeHandle onMouseDown={() => { isDragging.current = true; document.body.style.cursor = 'col-resize'; }} />
+
+        <div style={{ width: `${100 - paneSplit}%` }} className="flex flex-col min-w-[300px] bg-white border-l border-slate-200">
+            <div className="p-4 border-b border-slate-200 flex items-center gap-2 sticky top-0 bg-white/95 backdrop-blur z-10">
+                <BookOpen size={16} className="text-slate-500" />
+                <h3 className="text-xs font-bold text-slate-500 uppercase">Context Story</h3>
             </div>
             
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-thin scrollbar-thumb-slate-200">
-              {citations.length === 0 ? (
-                <div className="text-center p-10 flex flex-col items-center justify-center opacity-50">
-                  <PlusCircle size={24} className="text-slate-400 mb-2"/>
-                  <p className="text-slate-500 text-xs">Highlight story text<br/>to create citations.</p>
-                </div>
-              ) : (
-                citations.map((citation) => {
-                  const isAiSource = citation.id.startsWith('cit-ai');
-                  const activeClass = isAiSource 
-                    ? 'bg-blue-50 border-blue-200 text-slate-800 shadow-md transform scale-[1.02] z-10' 
-                    : 'bg-rose-50 border-rose-200 text-slate-800 shadow-md transform scale-[1.02] z-10';
-                  const defaultClass = 'bg-white border-slate-200 text-slate-600 hover:border-slate-300 hover:shadow-sm';
-
-                  return (
-                    <div 
-                      key={citation.id}
-                      id={`citation-card-${citation.id}`}
-                      onClick={() => insertCitationIntoDraft(citation.sourceId)}
-                      onMouseEnter={() => setActiveCitationId(citation.id)}
-                      onMouseLeave={() => setActiveCitationId(null)}
-                      className={`
-                        p-4 rounded-xl border text-sm cursor-pointer transition-all duration-200 group relative pr-8
-                        ${activeCitationId === citation.id ? activeClass : defaultClass}
-                      `}
-                    >
-                      <button
-                        onClick={(e) => { e.stopPropagation(); removeCitation(citation.id); }}
-                        className="absolute top-2 right-2 p-1 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors opacity-0 group-hover:opacity-100"
-                      >
-                        <X size={14} />
-                      </button>
-                      <div className="flex items-start gap-3">
-                        <span className={`
-                          flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-[10px] font-bold mt-0.5 transition-colors
-                          ${activeCitationId === citation.id 
-                             ? (isAiSource ? 'bg-blue-500 text-white' : 'bg-rose-500 text-white')
-                             : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200'
-                          }
-                        `}>
-                          {citation.sourceId}
-                        </span>
-                        <div className="space-y-1">
-                          <div className="flex items-start gap-2">
-                            <Quote size={12} className="flex-shrink-0 mt-1 text-slate-300" />
-                            <p className="leading-snug italic font-medium line-clamp-3">"{citation.text}"</p>
-                          </div>
-                        </div>
-                      </div>
+            <div ref={storyContainerRef} className="flex-1 overflow-y-auto p-6 scrollbar-thin scrollbar-thumb-slate-200">
+                <div className="prose prose-sm prose-slate max-w-none font-serif leading-loose text-slate-700">
+                    <div className="p-4 bg-slate-50 rounded-xl mb-6 text-sm text-slate-600 border border-slate-100 shadow-sm">
+                        <span className="font-bold text-slate-400 uppercase text-[10px] tracking-widest block mb-2">Summary</span>
+                        {summary}
                     </div>
-                  );
-                })
-              )}
+                    {renderHighlightedStory()}
+                </div>
             </div>
-          </aside>
         </div>
+
       </div>
     </div>
   );
