@@ -77,32 +77,11 @@ You need to set `HOST_PROJECT_PATH` in your `.env` file so the container knows w
     ```
 
 !!! note "API Keys"
-    Add your `OPENAI_API_KEY` and `TOGETHER_API_KEY`! See [Configuration](./configuration.md) for details.
+    Add your `OPENROUTER_API_KEY`! See [Configuration](./configuration.md) for details.
 
 ---
 
-## 3. Install Metadata
-
-The backend requires specific metadata files to initialize correctly.
-
-!!! warning "Manual Step Required"
-    1. [Download the wandb_metadata folder from Google Drive](https://drive.google.com/drive/folders/18xbqaHubmpQxrubngM7jGQF4QK_W6uXF){ .md-button }
-    2. Extract the zip file.
-    3. Move the `wandb_metadata` folder into `backend/`.
-
-**Final structure:**
-
-```
-introspecter/
-├── backend/
-│   └── wandb_metadata/  <-- Folder goes here
-├── frontend/
-└── .env
-```
-
----
-
-## 4. Launch Application
+## 3. Launch Application
 
 We offer two ways to run the environment: the VSCode Dev Container (easiest for development) or standard Docker Compose.
 
@@ -126,7 +105,7 @@ We offer two ways to run the environment: the VSCode Dev Container (easiest for 
     3. Run the following command:
 
     ```bash
-    docker compose up --build
+    docker compose up -d --build
     ```
 
     **Success:**  
