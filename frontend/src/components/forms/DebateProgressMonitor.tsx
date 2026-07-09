@@ -266,7 +266,7 @@ const DebateProgressMonitor = ({
 
     try {
         const agentModels = debateData.agents?.filter((a) => a.enabled)?.map((a) => a.model) || [];
-        const humanAgentIndex = agentModels.findIndex((model) => model === "human-participant");
+        const humanAgentIndex = agentModels.findIndex((model) => model === "human_participant");
         
         const isCustom = instance.dataset === "custom_questions";
 
@@ -337,7 +337,7 @@ const DebateProgressMonitor = ({
             const message: ProgressMessage = JSON.parse(event.data);            
             if (message.type === "connected" && !hasSeenConnected) {
               hasSeenConnected = true;              
-              const hasHumanAgent = debateData.agents?.some(a => a.enabled && a.model === "human-participant");
+              const hasHumanAgent = debateData.agents?.some(a => a.enabled && a.model === "human_participant");
               const backendWaiting = message.waiting_for_human || message.data?.waiting_for_human;
               
               if (hasHumanAgent || backendWaiting) {

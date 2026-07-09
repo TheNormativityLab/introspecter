@@ -6,7 +6,7 @@ RUN apt-get update && \
     apt-get install -y zsh git curl && \
     rm -rf /var/lib/apt/lists/* && \
     corepack enable && \
-    corepack prepare pnpm@latest --activate
+    corepack prepare pnpm@9.1.2 --activate
 
 # Set working directory
 WORKDIR /app

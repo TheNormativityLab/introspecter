@@ -1,24 +1,78 @@
 "use client";
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect } from "react";
+import { useRouter, usePathname } from "next/navigation";
 import {
   Settings,
   Brain,
-  User,
   PlayCircle,
   Plus,
   Trash2,
-  ArrowLeft,
   Gavel,
   MessageSquare,
-  Terminal,
   LayoutGrid,
   Bug,
   FileText,
-  CheckCircle2,
-  Clock
+  Clock,
+  Target,
+  Loader2,
+  AlertCircle
 } from "lucide-react";
 import DebateProgressMonitor from "@/components/forms/DebateProgressMonitor";
+import { useLLMConfigs } from "@/hooks/useLLMConfigs";
+
+interface NavItem {
+  icon: React.ReactNode;
+  label: string;
+  path: string;
+}
+
+const Sidebar = () => {
+  const router = useRouter();
+  const pathname = usePathname();
+
+  const navItems: NavItem[] = [
+    { icon: <LayoutGrid size={20} />, label: "Dashboard", path: "/" },
+    { icon: <Target size={20} />, label: "Analysis Agent", path: "/harness" },
+    { icon: <FileText size={20} />, label: "Debate Annotation", path: "/debate-annotation" },
+    { icon: <MessageSquare size={20} />, label: "Basic Debate", path: "/debate/new" },
+    { icon: <Bug size={20} />, label: "Debug", path: "/debate/debug" },
+  ];
+
+  const isActive = (path: string) => {
+    if (path === "/") return pathname === "/";
+    return pathname.startsWith(path);
+  };
+
+  return (
+    <aside className="w-16 bg-white border-r border-slate-200 flex flex-col items-center py-6 gap-6 z-20 flex-shrink-0 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+      <div
+        className="w-10 h-10 bg-slate-900 rounded-xl flex items-center justify-center text-white mb-2 shadow-lg shadow-slate-200 cursor-pointer"
+        onClick={() => router.push("/")}
+      >
+        <LayoutGrid size={20} />
+      </div>
+
+      <nav className="flex flex-col gap-3 w-full px-2">
+        {navItems.map((item) => (
+          <button
+            key={item.path}
+            onClick={() => router.push(item.path)}
+            className={`p-3 rounded-xl transition-colors relative group ${
+              isActive(item.path)
+                ? "bg-blue-50 text-blue-600"
+                : "text-slate-400 hover:bg-slate-50 hover:text-slate-600"
+            }`}
+          >
+            {item.icon}
+            <span className="absolute left-14 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
+              {item.label}
+            </span>
+          </button>
+        ))}
+      </nav>
+    </aside>
+  );
+};
 
 interface AgentConfig {
   id: string;
@@ -46,12 +100,14 @@ interface DebateFormData {
 export default function NewDebatePage() {
   const router = useRouter();
   
+  const { configs: availableModels, loading: modelsLoading, error: modelsError } = useLLMConfigs();
+  
   const [formData, setFormData] = useState<DebateFormData>({
     experimentName: "",
     numQuestions: 1,
     numRounds: 3,
     seeds: [1],
-    agents: [{ id: "agent1", name: "Agent 1", model: "gpt_4o_mini", enabled: true }],
+    agents: [],
     customQuestions: [],
     selectedDatasets: [],
   });
@@ -61,13 +117,31 @@ export default function NewDebatePage() {
   const [showCustomQuestions, setShowCustomQuestions] = useState(false);
   const [showProgressMonitor, setShowProgressMonitor] = useState(false);
 
-  const availableModels = ["gpt_4o_mini", "gpt_3_5_turbo", "mistral-7b", "llama_3_1_8B", "human-participant"];
+  useEffect(() => {
+    if (availableModels.length > 0 && formData.agents.length === 0) {
+      const defaultModel = availableModels.find(m => m.provider !== 'human') || availableModels[0];
+      if (defaultModel) {
+        setFormData(prev => ({
+          ...prev,
+          agents: [{
+            id: "agent1",
+            name: "Agent 1",
+            model: defaultModel.value,
+            enabled: true,
+            isHuman: defaultModel.provider === 'human'
+          }]
+        }));
+      }
+    }
+  }, [availableModels, formData.agents.length]);
+
   const availableDatasets = [
     { value: "gsm8k", label: "GSM8K (Math)" },
     { value: "mmlu", label: "MMLU (Knowledge)" },
     { value: "commonsense_qa", label: "CommonsenseQA" },
     { value: "custom", label: "Custom" },
   ];
+  
   const MAX_QUESTIONS = 100;
   const MAX_ROUNDS = 3;
 
@@ -88,17 +162,22 @@ export default function NewDebatePage() {
     const hasSeed = formData.seeds.length > 0;
     return hasName && hasValidNumbers && hasAgents && hasDatasets && hasSeed && !isQuestionsExceeded() && !isRoundsExceeded();
   };
-
-  const handleBackToDashboard = () => router.push('/dashboard');
   
   const addAgent = () => {
     if (formData.agents.length >= 3) return alert("Maximum of 3 agents allowed.");
+    if (availableModels.length === 0) return alert("No models available. Please wait for models to load.");
+    
     const newIndex = formData.agents.length + 1;
+    const defaultModel = availableModels.find(m => m.provider !== 'human') || availableModels[0];
+    
+    if (!defaultModel) return alert("No models available.");
+    
     const newAgent: AgentConfig = {
       id: `agent${Date.now()}`,
       name: `Agent ${newIndex}`,
-      model: "gpt_4o_mini",
+      model: defaultModel.value,
       enabled: true,
+      isHuman: defaultModel.provider === 'human'
     };
     setFormData((prev) => ({ ...prev, agents: [...prev.agents, newAgent] }));
   };
@@ -114,7 +193,18 @@ export default function NewDebatePage() {
   const updateAgent = (index: number, updates: Partial<AgentConfig>) => {
     setFormData((prev) => ({
       ...prev,
-      agents: prev.agents.map((agent, i) => (i === index ? { ...agent, ...updates } : agent)),
+      agents: prev.agents.map((agent, i) => {
+        if (i !== index) return agent;
+        
+        const updated = { ...agent, ...updates };
+        
+        if (updates.model) {
+          const selectedModel = availableModels.find(m => m.value === updates.model);
+          updated.isHuman = selectedModel?.provider === 'human';
+        }
+        
+        return updated;
+      }),
     }));
   };
 
@@ -142,12 +232,15 @@ export default function NewDebatePage() {
   const handleCreateDebate = async () => {
     setIsCreating(true);
     try {
+      const agentModels = getEnabledAgents().map(agent => agent.model);
+
       const debateData = {
         experimentName: formData.experimentName,
         totalQuestions: getTotalQuestions(),
         numRounds: formData.numRounds,
         seeds: formData.seeds,
         agents: getEnabledAgents(),
+        agentModels: agentModels,
         selectedDatasets: formData.selectedDatasets.filter((d) => d !== "custom"),
         customQuestions: formData.customQuestions.filter((q) => q.question.trim()),
         status: "pending",
@@ -176,61 +269,7 @@ export default function NewDebatePage() {
   return (
     <div className="flex h-screen w-full bg-[#f8f9fc] text-slate-800 font-sans overflow-hidden">
       
-    <aside className="w-16 bg-white border-r border-slate-200 flex flex-col items-center py-6 gap-6 z-20 flex-shrink-0 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
-        <button className="w-10 h-10 rounded-xl flex items-center justify-center bg-slate-900 text-white hover:bg-blue-600 transition-all shadow-md cursor-pointer" onClick={() => router.push('/dashboard')}>
-           <ArrowLeft size={20} />
-        </button>
-
-        <nav className="flex flex-col gap-3 w-full px-2">
-          
-          <button className="p-3 rounded-xl text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-colors relative group">
-            <LayoutGrid size={20} />
-            <span className="absolute left-14 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
-              Dashboard
-            </span>
-          </button>
-
-          <button 
-            onClick={() => router.push('/debate-annotation')} 
-            className="p-3 rounded-xl text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-colors relative group"
-          >
-            <FileText size={20} />
-            <span className="absolute left-14 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
-              Debate Annotation
-            </span>
-          </button>
-          
-          <button 
-            onClick={() => router.push('/argumentative-debate')} 
-            className="p-3 rounded-xl text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-colors relative group"
-          >
-            <Gavel size={20} />
-            <span className="absolute left-14 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
-              Argumentative Debate
-            </span>
-          </button>
-
-          <button 
-            onClick={() => router.push('/debate/new')} 
-            className="p-3 rounded-xl bg-blue-50 text-blue-600 transition-colors relative group"
-          >
-            <MessageSquare size={20} />
-            <span className="absolute left-14 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
-              Basic Debate
-            </span>
-          </button>
-
-          <button 
-            onClick={() => router.push('/debate/debug')} 
-            className="p-3 rounded-xl text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-colors relative group"
-          >
-            <Bug size={20} />
-            <span className="absolute left-14 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
-              Debug
-            </span>
-          </button>
-        </nav>
-      </aside>
+      <Sidebar />
 
       <main className="flex-1 flex flex-col min-w-0 bg-[#f8f9fc] overflow-hidden">
         <header className="px-8 py-5 bg-white border-b border-slate-200 flex justify-between items-center sticky top-0 z-10 shadow-[0_1px_2px_rgba(0,0,0,0.02)] flex-shrink-0">
@@ -241,7 +280,18 @@ export default function NewDebatePage() {
         </header>
 
         <div className="flex-1 overflow-y-auto p-8">
-            <div className="max-w-4xl mx-auto space-y-8 pb-20">                
+            <div className="max-w-4xl mx-auto space-y-8 pb-20">
+                
+                {modelsError && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
+                    <AlertCircle className="text-amber-500 flex-shrink-0 mt-0.5" size={20} />
+                    <div>
+                      <p className="text-sm font-medium text-amber-800">Could not load model configurations</p>
+                      <p className="text-xs text-amber-600 mt-1">Using fallback options. Error: {modelsError}</p>
+                    </div>
+                  </div>
+                )}
+                
                 <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
                     <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center gap-3">
                         <Settings size={18} className="text-slate-400" />
@@ -295,7 +345,6 @@ export default function NewDebatePage() {
                                             className="hidden" 
                                             checked={formData.seeds.includes(seed)}
                                             onChange={() => {
-                                                // REPLACED: Logic to only allow one seed at a time
                                                 setFormData(prev => ({...prev, seeds: [seed]}));
                                             }}
                                         />
@@ -312,51 +361,76 @@ export default function NewDebatePage() {
                         <div className="flex items-center gap-3">
                             <Brain size={18} className="text-slate-400" />
                             <h2 className="text-sm font-bold text-slate-700 uppercase tracking-wide">Configure Agents</h2>
+                            {modelsLoading && (
+                              <Loader2 size={14} className="animate-spin text-slate-400" />
+                            )}
                         </div>
                         <button 
                             onClick={addAgent}
-                            disabled={formData.agents.length >= 3}
+                            disabled={formData.agents.length >= 3 || modelsLoading || availableModels.length === 0}
                             className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             <Plus size={14} /> Add Agent
                         </button>
                     </div>
                     <div className="p-6 space-y-4">
-                        {formData.agents.map((agent, idx) => (
-                            <div key={agent.id} className={`flex items-center gap-4 p-4 rounded-xl border transition-all ${agent.enabled ? 'bg-white border-slate-200' : 'bg-slate-50 border-slate-100 opacity-60'}`}>
-                                <div className="flex items-center gap-4 flex-1">
-                                    <input 
-                                        type="checkbox" 
-                                        checked={agent.enabled}
-                                        onChange={(e) => updateAgent(idx, { enabled: e.target.checked })}
-                                        className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-0 cursor-pointer"
-                                    />
-                                    <div className="w-24 text-sm font-bold text-slate-700 flex items-center gap-2">
-                                        <div className="w-6 h-6 rounded bg-slate-100 flex items-center justify-center text-xs text-slate-500">
-                                            {idx + 1}
+                        {modelsLoading ? (
+                          <div className="flex items-center justify-center py-8 text-slate-400">
+                            <Loader2 size={24} className="animate-spin mr-2" />
+                            <span>Loading available models...</span>
+                          </div>
+                        ) : availableModels.length === 0 ? (
+                          <div className="flex items-center justify-center py-8 text-slate-400">
+                            <AlertCircle size={24} className="mr-2" />
+                            <span>No model configurations found. Check conf/llm_conf/ directory.</span>
+                          </div>
+                        ) : (
+                          <>
+                            {formData.agents.map((agent, idx) => (
+                                <div key={agent.id} className={`flex items-center gap-4 p-4 rounded-xl border transition-all ${agent.enabled ? 'bg-white border-slate-200' : 'bg-slate-50 border-slate-100 opacity-60'}`}>
+                                    <div className="flex items-center gap-4 flex-1">
+                                        <input 
+                                            type="checkbox" 
+                                            checked={agent.enabled}
+                                            onChange={(e) => updateAgent(idx, { enabled: e.target.checked })}
+                                            className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-0 cursor-pointer"
+                                        />
+                                        <div className="w-24 text-sm font-bold text-slate-700 flex items-center gap-2">
+                                            <div className="w-6 h-6 rounded bg-slate-100 flex items-center justify-center text-xs text-slate-500">
+                                                {idx + 1}
+                                            </div>
+                                            {agent.name}
                                         </div>
-                                        {agent.name}
+                                        
+                                        <div className="flex-1">
+                                            <select 
+                                                value={agent.model}
+                                                onChange={(e) => updateAgent(idx, { model: e.target.value })}
+                                                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:border-blue-500 outline-none bg-white"
+                                            >
+                                                {availableModels.map(m => (
+                                                    <option key={m.value} value={m.value}>
+                                                        {m.label}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
                                     </div>
-                                    
-                                    <div className="flex-1">
-                                        <select 
-                                            value={agent.model}
-                                            onChange={(e) => updateAgent(idx, { model: e.target.value, isHuman: e.target.value === 'human-participant' })}
-                                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:border-blue-500 outline-none bg-white"
-                                        >
-                                            {availableModels.map(m => (
-                                                <option key={m} value={m}>{m === 'human-participant' ? 'Human Participant' : m}</option>
-                                            ))}
-                                        </select>
-                                    </div>
+                                    {formData.agents.length > 1 && (
+                                        <button onClick={() => removeAgent(agent.id)} className="p-2 text-slate-400 hover:text-red-500 transition-colors">
+                                            <Trash2 size={16} />
+                                        </button>
+                                    )}
                                 </div>
-                                {formData.agents.length > 1 && (
-                                    <button onClick={() => removeAgent(agent.id)} className="p-2 text-slate-400 hover:text-red-500 transition-colors">
-                                        <Trash2 size={16} />
-                                    </button>
-                                )}
+                            ))}
+
+                            <div className="mt-4 pt-4 border-t border-slate-100">
+                              <p className="text-xs text-slate-500">
+                                {availableModels.length} model configurations available from <code className="bg-slate-100 px-1 rounded">conf/llm_conf/</code>
+                              </p>
                             </div>
-                        ))}
+                          </>
+                        )}
                     </div>
                 </div>
 
@@ -412,7 +486,7 @@ export default function NewDebatePage() {
                 <div className="flex justify-end pt-4">
                     <button 
                         onClick={handleCreateDebate}
-                        disabled={isCreating || !isFormValid()}
+                        disabled={isCreating || !isFormValid() || modelsLoading}
                         className="flex items-center gap-2 px-8 py-3 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-slate-900/20 transition-all cursor-pointer"
                     >
                         {isCreating ? <Clock className="animate-spin" size={18} /> : <PlayCircle className="fill-current" size={18} />}

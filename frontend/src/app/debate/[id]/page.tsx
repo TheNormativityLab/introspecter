@@ -1,6 +1,6 @@
 "use client";
 import React, { useEffect, useState, useMemo } from "react";
-import { useParams, useSearchParams, useRouter } from "next/navigation";
+import { useParams, useSearchParams, useRouter, usePathname } from "next/navigation";
 import {
   ArrowLeft,
   ChevronLeft,
@@ -16,7 +16,11 @@ import {
   ChevronUp,
   Hash,
   Check,
-  User
+  LayoutGrid,
+  FileText,
+  Gavel,
+  Bug,
+  Target
 } from "lucide-react";
 import {
   MultiRunDebateData,
@@ -34,6 +38,60 @@ import {
   type TaskName,
 } from "../../../utils/evaluation";
 import "katex/dist/katex.min.css";
+
+interface NavItem {
+  icon: React.ReactNode;
+  label: string;
+  path: string;
+}
+
+const Sidebar = () => {
+  const router = useRouter();
+  const pathname = usePathname();
+
+  const navItems: NavItem[] = [
+    { icon: <LayoutGrid size={20} />, label: "Dashboard", path: "/" },
+    { icon: <Target size={20} />, label: "Analysis Agent", path: "/harness" },
+    { icon: <FileText size={20} />, label: "Debate Annotation", path: "/debate-annotation" },
+    { icon: <MessageSquare size={20} />, label: "Basic Debate", path: "/debate/new" },
+    { icon: <Bug size={20} />, label: "Debug", path: "/debate/debug" },
+  ];
+
+  const isActive = (path: string) => {
+    if (path === "/") return pathname === "/";
+    return pathname.startsWith(path);
+  };
+
+  return (
+    <aside className="w-16 bg-white border-r border-slate-200 flex flex-col items-center py-6 gap-6 z-20 flex-shrink-0 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+      <div
+        className="w-10 h-10 bg-slate-900 rounded-xl flex items-center justify-center text-white mb-2 shadow-lg shadow-slate-200 cursor-pointer"
+        onClick={() => router.push("/")}
+      >
+        <LayoutGrid size={20} />
+      </div>
+
+      <nav className="flex flex-col gap-3 w-full px-2">
+        {navItems.map((item) => (
+          <button
+            key={item.path}
+            onClick={() => router.push(item.path)}
+            className={`p-3 rounded-xl transition-colors relative group ${
+              isActive(item.path)
+                ? "bg-blue-50 text-blue-600"
+                : "text-slate-400 hover:bg-slate-50 hover:text-slate-600"
+            }`}
+          >
+            {item.icon}
+            <span className="absolute left-14 bg-slate-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
+              {item.label}
+            </span>
+          </button>
+        ))}
+      </nav>
+    </aside>
+  );
+};
 
 const LatexRenderer = ({ text }: { text: string }) => {
   const [parts, setParts] = useState<React.ReactNode[]>([]);
@@ -416,9 +474,11 @@ export default function DebateDetailsPage() {
   return (
     <div className="flex h-screen w-full bg-[#f8f9fc] text-slate-800 font-sans overflow-hidden">
       
-      <aside className="w-80 bg-white border-r border-slate-200 flex flex-col flex-shrink-0 z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
+      <Sidebar />
+
+      <aside className="w-80 bg-white border-r border-slate-200 flex flex-col flex-shrink-0 z-10 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
         <div className="p-4 border-b border-slate-100 flex items-center gap-3">
-            <button onClick={() => router.push('/dashboard')} className="p-2 hover:bg-slate-50 rounded-lg text-slate-500 transition-colors">
+            <button onClick={() => router.push('/')} className="p-2 hover:bg-slate-50 rounded-lg text-slate-500 transition-colors">
                 <ArrowLeft size={18} />
             </button>
             <h2 className="font-bold text-slate-700 truncate text-sm" title={currentRun.wandb_metadata?.parsed_args?.["experiment.name"]}>
