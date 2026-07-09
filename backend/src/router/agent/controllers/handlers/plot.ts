@@ -35,7 +35,78 @@ interface AgentConversationWithPlots {
   updatedAt: Date;
 }
 
-// Helper to safely parse JSON array from Prisma
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function looksLikeUuid(value: string | null | undefined): boolean {
+  return !!value && UUID_RE.test(value.trim());
+}
+
+function extractRunNameFromResultData(resultData: any): string | null {
+  if (!resultData) return null;
+  let rd = resultData;
+  if (typeof rd === 'string') {
+    try { rd = JSON.parse(rd); } catch { return null; }
+  }
+  if (rd?.metadata?.run_name) return rd.metadata.run_name;
+  if (rd?.run_name) return rd.run_name;
+  return null;
+}
+
+function extractRunName(
+  wandbMetadata: any,
+  experimentId: string | null,
+  resultData?: any,
+): string {
+
+  let parsed = wandbMetadata;
+
+  if (typeof wandbMetadata === 'string') {
+    try {
+      parsed = JSON.parse(wandbMetadata);
+    } catch {
+      parsed = null;
+    }
+  }
+
+  if (parsed?.tags && Array.isArray(parsed.tags)) {
+    const nameTag = parsed.tags.find(
+      (tag: any) =>
+        typeof tag === "string" &&
+        tag.startsWith("name-")
+    );
+
+    if (nameTag) {
+      return nameTag.replace(/^name-/, "");
+    }
+  }
+
+  // NEW
+  if (parsed?.parsed_args?.["experiment.name"]) {
+    return parsed.parsed_args["experiment.name"];
+  }
+
+  if (parsed?.parsed_args?.experiment_name) {
+    return parsed.parsed_args.experiment_name;
+  }
+
+  if (parsed?.parsed_args?.name) {
+    return parsed.parsed_args.name;
+  }
+
+  if (parsed?.run_name) return parsed.run_name;
+  if (parsed?.name) return parsed.name;
+  if (parsed?.runName) return parsed.runName;
+
+  const fromResultData = extractRunNameFromResultData(resultData);
+  if (fromResultData) return fromResultData;
+
+  if (experimentId && !looksLikeUuid(experimentId)) {
+    return experimentId;
+  }
+
+  return "Unknown";
+}
+
 function parseJsonArray<T>(value: unknown): T[] {
   if (Array.isArray(value)) {
     return value as T[];
@@ -215,39 +286,6 @@ export async function handleHarnessAnalyze(req: Request, res: Response): Promise
   }
 }
 
-function extractRunName(wandbMetadata: any, experimentId: string | null): string {
-  if (!wandbMetadata) {
-    return experimentId || 'Unknown';
-  }
-
-  let parsed = wandbMetadata;
-  if (typeof wandbMetadata === 'string') {
-    try {
-      parsed = JSON.parse(wandbMetadata);
-    } catch (e) {
-      return experimentId || 'Unknown';
-    }
-  }
-
-  if (parsed?.tags && Array.isArray(parsed.tags)) {
-    const nameTag = parsed.tags.find((tag: any) => 
-      typeof tag === 'string' && tag.startsWith('name-')
-    );
-    if (nameTag) {
-      const extracted = nameTag.replace(/^name-/, '');
-      return extracted;
-    }
-  }
-
-  if (parsed && typeof parsed === 'object') {
-    if (parsed.run_name) return parsed.run_name;
-    if (parsed.name) return parsed.name;
-    if (parsed.runName) return parsed.runName;
-  }
-
-  return experimentId || 'Unknown';
-}
-
 function hasValidTags(wandbMetadata: any): boolean {
   if (!wandbMetadata) return false;
 
@@ -267,44 +305,43 @@ function hasValidTags(wandbMetadata: any): boolean {
 export async function handleHarnessRuns(req: Request, res: Response): Promise<void> {
   try {
     const debates = await prisma.debate.findMany({
-      where: { 
-        status: 'completed', 
+      where: {
+        status: 'completed',
         resultData: { not: Prisma.AnyNull },
-        performanceData: { not: Prisma.AnyNull }
       },
       orderBy: { createdAt: 'desc' },
-      select: { 
-        id: true, 
+      select: {
+        id: true,
         experimentId: true,
         datasetName: true,
-        status: true, 
+        status: true,
         createdAt: true,
         wandbMetadata: true,
-        performanceData: true
+        performanceData: true,
+        resultData: true,
       }
     });
 
-    logger.info(`Found ${debates.length} completed debates with performance data`);
+    logger.info(`Found ${debates.length} completed debates with result data`);
 
     const experimentMap = new Map<string, any>();
-    let skippedNoPerformance = 0;
-    let skippedNoTags = 0;
-    
+    let skippedNoRunName = 0;
+
     for (const d of debates) {
-      if (!d.performanceData || 
-          (typeof d.performanceData === 'object' && Object.keys(d.performanceData).length === 0)) {
-        skippedNoPerformance++;
-        continue;
+      const runName = extractRunName(
+        d.wandbMetadata,
+        d.experimentId,
+        d.resultData
+      );
+
+      if (!runName || runName === 'Unknown') {
+        skippedNoRunName++;
       }
 
-      if (!hasValidTags(d.wandbMetadata) || extractRunName(d.wandbMetadata, d.experimentId) === 'splendid-galaxy-93') {
-        skippedNoTags++;
-        continue;
-      }
+      const key = runName && runName !== 'Unknown'
+        ? runName
+        : `debate-${d.id}`;
 
-      const runName = extractRunName(d.wandbMetadata, d.experimentId);
-      const key = runName;
-      
       if (!experimentMap.has(key)) {
         let parsedWandb: any = {};
         if (d.wandbMetadata) {
@@ -319,36 +356,41 @@ export async function handleHarnessRuns(req: Request, res: Response): Promise<vo
           }
         }
 
-        experimentMap.set(key, { 
-          name: runName, 
+        experimentMap.set(key, {
+          name: runName === 'Unknown' ? `Debate ${d.id}` : runName,
           experimentId: d.experimentId,
-          dataset: d.datasetName, 
-          debateIds: [], 
+          dataset: d.datasetName,
+          debateIds: [],
           createdAt: d.createdAt,
-          wandbMetadata: parsedWandb
+          wandbMetadata: parsedWandb,
+          hasPerformanceData: false,
         });
       }
-      
-      experimentMap.get(key)!.debateIds.push(d.id);
+
+      const entry = experimentMap.get(key)!;
+      entry.debateIds.push(d.id);
+
+      const hasPerf = !!d.performanceData &&
+        !(typeof d.performanceData === 'object' && Object.keys(d.performanceData).length === 0);
+      if (hasPerf) entry.hasPerformanceData = true;
     }
 
-    logger.info(`Skipped ${skippedNoPerformance} debates with empty performanceData`);
-    logger.info(`Skipped ${skippedNoTags} debates with empty/missing tags`);
+    logger.info(`Grouped into ${experimentMap.size} experiments (${skippedNoRunName} debates had no run name / experimentId and were grouped individually)`);
 
     const grouped = Array.from(experimentMap.values()).map((exp, i) => {
       let models: string[] = [];
       const wandb = exp.wandbMetadata;
-      
+
       if (wandb?.tags && Array.isArray(wandb.tags)) {
-        models = wandb.tags.filter((tag: string) => 
-          typeof tag === 'string' && 
-          !tag.startsWith('name-') && 
-          !tag.startsWith('rounds-') && 
-          !tag.startsWith('seed-') && 
+        models = wandb.tags.filter((tag: string) =>
+          typeof tag === 'string' &&
+          !tag.startsWith('name-') &&
+          !tag.startsWith('rounds-') &&
+          !tag.startsWith('seed-') &&
           !tag.startsWith('task-')
         );
       }
-      
+
       if (models.length === 0 && wandb) {
         if (Array.isArray(wandb.models)) {
           models = wandb.models;
@@ -359,7 +401,7 @@ export async function handleHarnessRuns(req: Request, res: Response): Promise<vo
 
       let numRounds = 0;
       if (wandb?.tags && Array.isArray(wandb.tags)) {
-        const roundsTag = wandb.tags.find((tag: string) => 
+        const roundsTag = wandb.tags.find((tag: string) =>
           typeof tag === 'string' && tag.startsWith('rounds-')
         );
         if (roundsTag) {
@@ -373,12 +415,13 @@ export async function handleHarnessRuns(req: Request, res: Response): Promise<vo
         name: exp.name,
         experimentId: exp.experimentId,
         dataset: exp.dataset || 'Unknown',
-        models: models,
+        models,
         status: `${exp.debateIds.length}/${exp.debateIds.length}`,
-        numRounds: numRounds,
+        numRounds,
         numDebates: exp.debateIds.length,
         debateIds: exp.debateIds,
         createdAt: exp.createdAt?.toISOString(),
+        hasPerformanceData: exp.hasPerformanceData,
       };
     });
 
