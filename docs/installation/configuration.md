@@ -86,7 +86,7 @@ Credentials for RabbitMQ, which handles task queues and inter-service communicat
 - [ ] Install TypeScript
 - [ ] Copy `.env.example` to `.env`
 - [ ] Set `HOST_PROJECT_PATH` to your absolute project path
-- [ ] Add at least `OPENAI_API_KEY` or `OPENROUTER_API_KEY`
+- [ ] Add `OPENROUTER_API_KEY`
 - [ ] (Optional) Add `WANDB_API_KEY` for experiment tracking
 - [ ] Configure `DATABASE_URL` (or the individual database credentials)
 - [ ] Change RabbitMQ credentials if deploying publicly
