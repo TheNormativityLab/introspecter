@@ -1,168 +1,133 @@
-import asyncio
-import json
-import logging
-from typing import Callable, Literal, Optional, Union, List
-from omegaconf import DictConfig, OmegaConf
-
-import attrs
-import litellm
-from litellm import Router, APIError
-
-from src.llm_api.base_llm_abstractions import LLMResponse, Message, LLMConfig
-
 import os
-os.environ["LITELLM_TELEMETRY"] = "False"
-os.environ["LITELLM_LOGGING"] = "False"
+import re
+import logging
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass, field
+from litellm import Router
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
-# TODO: get logger from hydra
-# from pr_agent.log import get_logger
-# TMP only
-litellm.telemetry = False
-litellm.success_callback = []
-litellm.failure_callback = []
-litellm.callbacks = []
 logger = logging.getLogger(__name__)
 
 
-@attrs.define()
-class LLMClient:
-    config: LLMConfig  # the base LLM config given directly from the hydra config
+def _deep_convert_to_python(obj: Any) -> Any:
+    if isinstance(obj, DictConfig):
+        return {k: _deep_convert_to_python(v) for k, v in obj.items()}
+    elif isinstance(obj, ListConfig):
+        return [_deep_convert_to_python(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: _deep_convert_to_python(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_deep_convert_to_python(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(_deep_convert_to_python(item) for item in obj)
+    else:
+        return obj
 
-    organization: Optional[str] = None
-    print_prompt_and_response: bool = False
 
-    router: Router = None
-    model_name: str = None
+def _resolve_env_var(value: Any) -> Any:
+    if isinstance(value, str):
+        env_pattern = re.compile(r'\$\{(?:oc\.env:)?([A-Z_][A-Z0-9_]*)(?:,([^}]*))?\}')
+        def replace_env(match):
+            env_var = match.group(1)
+            default = match.group(2) if match.group(2) else None
+            env_val = os.environ.get(env_var)
+            if env_val:
+                return env_val
+            if default is not None:
+                return default
+            return f"os.environ/{env_var}"
+        return env_pattern.sub(replace_env, value)
+    elif isinstance(value, dict):
+        return {k: _resolve_env_var(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [_resolve_env_var(item) for item in value]
+    return value
 
-    def __attrs_post_init__(self):
-        litellm.organization = self.organization
-        self._setup_api_keys()
 
-        # for setting the callbacks
-        # TODO: Set the callbacks here
-        # https://docs.litellm.ai/docs/#track-costs-usage-latency-for-streaming
-        # https://docs.litellm.ai/docs/observability/custom_callback
-
-        # TODO: get the model list from the config
-        # TODO: add a check that only a single model is supported for now
-        # can add other model-specific parameters here as litellm params in the config
-        # see: https://docs.litellm.ai/docs/routing
-        # check that model_name is same for all the dicts in model_list
-        model_names = [model.model_name for model in self.config.language_models]
-        assert len(set(model_names)) == 1, "Only a single model is supported for now"
-        self.model_name = model_names[0]
-        # Convert to format expected by litellm Router
-        model_list = [
-            {
-                "model_name": model.model_name,
-                "litellm_params": model.litellm_params,
+class LLM:
+    def __init__(self, config):
+        self.config = config
+        self.router = self._build_router()
+    
+    def _build_router(self) -> Router:
+        model_list = []
+        
+        language_models = getattr(self.config, 'language_models', None)
+        if language_models is None and hasattr(self.config, '__getitem__'):
+            language_models = self.config.get('language_models', [])
+        
+        if not language_models:
+            raise ValueError("No language models configured")
+        
+        for lm in language_models:
+            if hasattr(lm, 'litellm_params'):
+                litellm_params = lm.litellm_params
+            elif isinstance(lm, dict):
+                litellm_params = lm.get('litellm_params', {})
+            else:
+                litellm_params = {}
+            
+            if hasattr(lm, 'model_name'):
+                model_name = lm.model_name
+            elif isinstance(lm, dict):
+                model_name = lm.get('model_name', 'unknown')
+            else:
+                model_name = 'unknown'
+            
+            litellm_params = _deep_convert_to_python(litellm_params)
+            litellm_params = _resolve_env_var(litellm_params)
+            
+            model_entry = {
+                "model_name": model_name,
+                "litellm_params": litellm_params
             }
-            for model in self.config.language_models
-        ]
-
-        # print(json.dumps(OmegaConf.to_container(model_list), indent=2)) # TODO: remove it later, once logging is added
-        self.router = Router(model_list=model_list)
-
-        # Store completion params for later use
-        # self.completion_params = self.config.completion_params
-
-    def _setup_api_keys(self):
-        """Set up API keys for different LLM providers."""
-        # Load environment variables if .env exists
-        if os.path.exists(".env"):
-            from dotenv import load_dotenv
-
-            load_dotenv()
-
-        # Setup OpenAI API key
-        openai_key = os.getenv("OPENAI_API_KEY")
-        if not openai_key:
-            logger.error("OPENAI_API_KEY is not set")
-            raise ValueError("OPENAI_API_KEY is not set in environment variables")
-        litellm.openai_key = openai_key
-
-        # TODO: do the same for other LLM providers
-        # check if ANTHROPIC_API_KEY is set
-        if os.getenv("ANTHROPIC_API_KEY") is not None:
-            litellm.anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-        # NOERROR if not set
-
-        # together api key
-        if os.getenv("TOGETHERAI_API_KEY") is not None:
-            litellm.togetherai_api_key = os.getenv("TOGETHERAI_API_KEY")
-
-    # TODO: add the weave or logging decorator either here or in the agent? -> Going with the Agent for now
-    async def __call__(
-        self,
-        messages: List[Message],
-        **kwargs,
-    ):
-        try:
-            resp, finish_reason = None, None
-
-            # the base payload
-            message_payload = [message.model_dump() for message in messages]
-            logger.debug("Prompts", artifact=message_payload)
-
-            # if self.config.verbosity_level >= 2:
-            #     logger.info(f"\nSystem prompt:\n{message_payload}")
-
-            # join the completion params in the config with the explicit kwargs
-            completion_params = {
-                **self.config.completion_params,  # Now using stored completion_params
-                **kwargs,
-            }
-
-            response = await self.router.acompletion(
-                model=self.model_name,
-                messages=message_payload,
-                **completion_params,
-            )
-
-        except Exception as e:
-            logger.warning(f"Unknown error during LLM inference: {e}")
-            # raise
-            raise APIError from e
-
-        if response is None or len(response["choices"]) == 0:
-            # empty response
-            raise APIError
+            model_list.append(model_entry)
+        
+        completion_params = {}
+        if hasattr(self.config, 'completion_params'):
+            cp = self.config.completion_params
+            if hasattr(cp, 'to_dict'):
+                completion_params = cp.to_dict()
+            elif isinstance(cp, dict):
+                completion_params = cp
+            else:
+                completion_params = _deep_convert_to_python(cp)
+        
+        completion_params = _deep_convert_to_python(completion_params)
+        
+        router = Router(
+            model_list=model_list,
+            default_litellm_params=completion_params,
+            num_retries=5,
+            timeout=300,
+            retry_after=5,
+        )
+        
+        return router
+    
+    async def __call__(self, messages: List[Dict[str, str]], **kwargs) -> Any:
+        language_models = getattr(self.config, 'language_models', None)
+        if language_models is None and hasattr(self.config, '__getitem__'):
+            language_models = self.config.get('language_models', [])
+        
+        if not language_models:
+            raise ValueError("No language models configured")
+        
+        first_model = language_models[0]
+        if hasattr(first_model, 'model_name'):
+            model_name = first_model.model_name
+        elif isinstance(first_model, dict):
+            model_name = first_model.get('model_name', 'unknown')
         else:
-            # extract the response
-            # https://platform.openai.com/docs/quickstart?language-preference=python
-            resp = response["choices"][0]["message"]["content"]
-            finish_reason = response["choices"][0]["finish_reason"]
-
-            prompt_tokens = (
-                response["usage"]["prompt_tokens"] if response.usage else None
-            )
-            completion_tokens = (
-                response["usage"]["completion_tokens"] if response.usage else None
-            )
-            total_tokens = response["usage"]["total_tokens"] if response.usage else None
-
-            cost = (
-                response._hidden_params["response_cost"]
-                if response._hidden_params
-                else None
-            )
-            logger.debug(f"\nAI response:\n{resp}")
-
-            llm_response = LLMResponse(
-                model=self.model_name,
-                completion=resp,
-                stop_reason=finish_reason,
-                # token usage
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
-                # other fields
-                cost=cost,
-            )
-
-            # TODO: add the other optional fields for the response
-
-        return llm_response
-
-    def add_litellm_callbacks(self, kwargs):
-        pass
+            model_name = 'unknown'
+        
+        messages = _deep_convert_to_python(messages)
+        kwargs = _deep_convert_to_python(kwargs)
+        
+        response = await self.router.acompletion(
+            model=model_name,
+            messages=messages,
+            **kwargs
+        )
+        
+        return response

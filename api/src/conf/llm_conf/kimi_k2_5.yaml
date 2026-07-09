@@ -1,0 +1,15 @@
+# check https://docs.litellm.ai/docs/routing for more details on how to configure multiple endpoints
+
+language_models:
+  - model_name: "kimi-k2.5"
+    litellm_params:
+      model: "openrouter/moonshotai/kimi-k2.5"
+      timeout: 300
+      num_retries: 15
+      rpm: 1000
+
+completion_params:
+  max_completion_tokens: 32768
+  extra_body:
+    reasoning:
+      effort: "low"

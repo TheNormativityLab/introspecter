@@ -1,0 +1,15 @@
+# check https://docs.litellm.ai/docs/routing for more details on how to configure multiple endpoints
+
+language_models:
+  - model_name: "gpt-5-nano"
+    litellm_params:
+      model: "openrouter/openai/gpt-5-nano"
+      timeout: 300
+      num_retries: 5
+      rpm: 1000
+
+completion_params:
+  max_completion_tokens: 4096
+  extra_body:
+    reasoning:
+      effort: "minimal"

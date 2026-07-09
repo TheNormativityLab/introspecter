@@ -1,0 +1,33 @@
+# Qwen3 A3B via OpenRouter with reasoning capped.
+# litellm provider docs:    https://docs.litellm.ai/docs/providers/openrouter
+# OpenRouter reasoning API: https://openrouter.ai/docs/use-cases/reasoning-tokens
+# Verify the exact slug on  https://openrouter.ai/models if calls 404.
+#
+# Notes from smoke testing this model:
+# - Use max_completion_tokens (not max_tokens — the latter is silently ignored
+#   for reasoning-enabled calls; symptom is finish_reason=length around 2048).
+# - extra_body belongs in completion_params, not litellm_params: it's per-call,
+#   not per-model wiring.
+# - reasoning.effort is a no-op on Qwen — it uses thinking_budget, which maps
+#   to reasoning.max_tokens. Cap reasoning explicitly with max_tokens.
+# - Reasoning + visible content share the max_completion_tokens budget, so
+#   max_completion_tokens must be > reasoning.max_tokens + expected response.
+
+language_models:
+  - model_name: "qwen3.5-35b"
+    litellm_params:
+      model: "openrouter/qwen/qwen3.5-flash-02-23"
+      timeout: 300
+      num_retries: 5
+      rpm: 1000
+
+completion_params:
+  max_completion_tokens: 4096
+  temperature: 0.7
+  top_p: 0.8
+  presence_penalty: 1.5
+  extra_body:
+    reasoning:
+      enabled: false
+
+    top_k: 20

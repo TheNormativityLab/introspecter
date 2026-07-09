@@ -1,0 +1,19 @@
+# check https://docs.litellm.ai/docs/routing for more details on how to configure multiple endpoints
+
+language_models:
+  - model_name: "qwen3-8b"
+    litellm_params:
+      model: "openrouter/qwen/qwen3-8b"
+      timeout: 300
+      num_retries: 5
+      rpm: 1000
+
+completion_params:
+  max_tokens: 16384
+  temperature: 0.7
+  top_p: 0.8
+  presence_penalty: 1.5
+  extra_body:
+    reasoning:
+      enabled: false
+  # top_k: 20

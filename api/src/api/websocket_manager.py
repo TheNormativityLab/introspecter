@@ -216,6 +216,13 @@ class WebSocketManager:
             except Exception:
                 pass
 
+    async def ensure_human_ready_queue(self, debate_id: str):
+        await self.initialize()
+        queue = await self.channel.declare_queue(
+            f'human_ready_{debate_id}', durable=True, auto_delete=False
+        )
+        await queue.bind(self.human_response_exchange, routing_key=f"{debate_id}_ready")
+
     def is_connected(self, debate_id: str) -> bool:
         return debate_id in self.active_connections and not self._closing
     

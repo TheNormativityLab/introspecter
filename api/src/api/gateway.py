@@ -17,10 +17,10 @@ from collections import Counter
 import aio_pika
 from aio_pika import Message, ExchangeType
 from hydra import compose, initialize_config_dir
-from omegaconf import OmegaConf, DictConfig
+from omegaconf import OmegaConf, DictConfig, ListConfig
 from celery.result import AsyncResult
 import litellm
-
+from src.environments.llm_configs import router as llm_configs_router
 from src.database.database import DatabaseManager
 from src.database.repository import DebateRepository
 from src.environments.debate.utils import load_and_prepare_data, get_question_data
@@ -34,37 +34,117 @@ ws_manager: Optional[WebSocketManager] = None
 RABBITMQ_URL = os.getenv('CELERY_BROKER_URL', 'amqp://guest:guest@introspecter-rabbitmq:5672//')
 
 CONFIG_MAP_CACHE = {
+    # Llama
     "llama_3_1_8b": "llama_3_1_8B",
     "llama_3_1_8b_chat": "llama_3_1_8B",
     "llama_3_1_8b_instruct": "llama_3_1_8B",
     "vec_llama_3_1_8b": "llama_3_1_8B",
+    "llama_3_2_3b": "llama_3_2_3B",
+
+    # Mistral
     "mistral_7b": "mistral_7B",
     "mistral_7b_instruct": "mistral_7B",
     "vec_mistral_7b": "mistral_7B",
+
+    # Gemma
+    "gemma3_4b": "gemma3_4B",
+    "gemma_4_31b": "gemma_4_31B",
+
+    # Qwen
+    "qwen3_8b": "qwen3_8b",
+    "qwen3_5_9b": "qwen3.5_9B",
+    "qwen3_5_35b": "qwen3.5_35B",
+
+    # OpenAI
     "gpt_3_5_turbo": "gpt_3_5_turbo",
     "gpt_4o_mini": "gpt_4o_mini",
-    "human_participant": "human-participant",
-    "human": "human-participant",
+    "gpt_5": "gpt_5",
+    "gpt_5_mini": "gpt_5_mini",
+    "gpt_5_nano": "gpt_5_nano",
+    "gpt_5_nano_16k": "gpt_5_nano_16k",
+    "gpt_oss_120b": "gpt_oss_120B",
+
+    # Anthropic
+    "sonnet": "sonnet",
+
+    # Kimi
+    "kimi_k2_5": "kimi_k2_5",
+
+    # Human
+    "human_participant": "human_participant",
+    "human": "human_participant",
 }
+
+def _register_omegaconf_resolvers():
+    try:
+        if not OmegaConf.has_resolver("oc.env"):
+            OmegaConf.register_new_resolver(
+                "oc.env",
+                lambda key, default="": os.environ.get(key, default)
+            )
+    except Exception as e:
+        logger.warning(f"Failed to register oc.env resolver: {e}")
+
+
+_register_omegaconf_resolvers()
+
+
+def _deep_convert_to_python(obj: Any) -> Any:
+    if isinstance(obj, DictConfig):
+        return {k: _deep_convert_to_python(v) for k, v in obj.items()}
+    elif isinstance(obj, ListConfig):
+        return [_deep_convert_to_python(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: _deep_convert_to_python(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_deep_convert_to_python(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(_deep_convert_to_python(item) for item in obj)
+    else:
+        return obj
+
+
+def _resolve_env_vars_in_config(cfg: Any) -> Any:
+    env_pattern = re.compile(r'\$\{(?:oc\.env:)?([A-Z_][A-Z0-9_]*)(?:,([^}]*))?\}')
+    
+    def resolve_value(val):
+        if isinstance(val, (DictConfig, dict)):
+            return {k: resolve_value(v) for k, v in val.items()}
+        elif isinstance(val, (ListConfig, list)):
+            return [resolve_value(item) for item in val]
+        elif isinstance(val, str):
+            def replace_env(match):
+                env_var = match.group(1)
+                default = match.group(2) if match.group(2) else None
+                env_val = os.environ.get(env_var)
+                if env_val:
+                    return env_val
+                if default is not None:
+                    return default
+                return f"os.environ/{env_var}"
+            return env_pattern.sub(replace_env, val)
+        return val
+    
+    resolved = resolve_value(cfg)
+    return _deep_convert_to_python(resolved)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db_manager, ws_manager
+    _register_omegaconf_resolvers()
     db_manager = DatabaseManager()
     await db_manager.create_tables()
     logger.info("Database initialized")
-    
     ws_manager = WebSocketManager(rabbitmq_url=RABBITMQ_URL)
     await ws_manager.initialize()
     logger.info("WebSocket manager initialized")
-    
     yield
-    
     if ws_manager:
         await ws_manager.close()
-    
     if db_manager:
         await db_manager.close()
+
 
 app = FastAPI(
     title="Debate System API",
@@ -72,10 +152,13 @@ app = FastAPI(
     version="5.0.0",
     lifespan=lifespan
 )
+app.include_router(llm_configs_router)
+
 
 class HumanResponseRequest(BaseModel):
     response_text: str
     extracted_answer: str
+
 
 class CreateDebateRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra='allow')
@@ -99,6 +182,7 @@ class CreateDebateRequest(BaseModel):
             self.selected_datasets = []
         return self
 
+
 class CreateArgumentativeDebateRequest(BaseModel):
     type: str
     story: str
@@ -108,6 +192,7 @@ class CreateArgumentativeDebateRequest(BaseModel):
     model_name: str = "gpt-4o-mini"
     human_latest_argument: Optional[str] = None
     history: Optional[List[Dict[str, Any]]] = None
+
 
 class DebateResponse(BaseModel):
     debate_id: uuid.UUID
@@ -120,6 +205,7 @@ class DebateResponse(BaseModel):
     human_agent_index: Optional[int]
     created_at: datetime
 
+
 class ReplayDebateRequest(BaseModel):
     original_debate_id: int
     start_from_round: int
@@ -129,77 +215,67 @@ class ReplayDebateRequest(BaseModel):
     question_data: Dict[str, Any]
     previous_rounds: Optional[List[Dict[str, Any]]] = []
     original_config: Dict[str, Any]
-    
+
     def get_debate_id_str(self) -> str:
         return str(self.original_debate_id)
+
 
 async def get_db_session():
     async with db_manager.get_session() as session:
         yield session
 
+
 async def get_debate_repository(session=Depends(get_db_session)):
     return DebateRepository(session)
+
 
 def normalize_model_name(model_name: str) -> str:
     if not model_name:
         return ""
     return model_name.lower().strip().replace("-", "_")
 
+
 def get_model_config_name(model_name: str) -> str:
     if not model_name:
         return ""
     normalized = model_name.lower().strip().replace("-", "_").replace(".", "_")
-    
     if normalized in CONFIG_MAP_CACHE:
         return CONFIG_MAP_CACHE[normalized]
-    
     for key, value in CONFIG_MAP_CACHE.items():
         if normalized in key or key in normalized:
             return value
-            
     return normalized
 
+
 def _split_story_into_sentences(story: str) -> List[str]:
-    """Helper to split story into sentences cleanly."""
     if not story:
         return []
-    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', story) if s.strip()]
-    return sentences
+    return [s.strip() for s in re.split(r'(?<=[.!?])\s+', story) if s.strip()]
+
 
 def _format_story_with_indices(sentences: List[str]) -> str:
-    """Format story as [1] Sentence one. [2] Sentence two."""
-    formatted = []
-    for i, sentence in enumerate(sentences):
-        formatted.append(f"[{i+1}] {sentence}")
-    return "\n".join(formatted)
+    return "\n".join(f"[{i+1}] {sentence}" for i, sentence in enumerate(sentences))
+
 
 def _extract_citations_from_response(response: str, sentences: List[str]) -> List[Dict[str, Any]]:
-    """
-    Parse the AI response for markers like [1], [2] and map them back to the original sentences.
-    """
     citations = []
-    seen_indices = set()    
+    seen_indices = set()
     matches = re.findall(r'\[(\d+)\]', response)
-    
     for idx_str in matches:
         try:
             idx = int(idx_str) - 1
             if 0 <= idx < len(sentences) and idx not in seen_indices:
-                citations.append({
-                    "text": sentences[idx],
-                    "index": idx,
-                    "sourceId": idx + 1
-                })
+                citations.append({"text": sentences[idx], "index": idx, "sourceId": idx + 1})
                 seen_indices.add(idx)
         except ValueError:
             continue
-            
     return citations
+
 
 async def _stream_argument_response(request: CreateArgumentativeDebateRequest) -> AsyncGenerator[str, None]:
     story_sentences = _split_story_into_sentences(request.story)
     formatted_story = _format_story_with_indices(story_sentences)
-    
+
     base_context = (
         f"You are a debate AI participating in an argument.\n\n"
         f"STORY CONTEXT:\n{formatted_story}\n\n"
@@ -230,33 +306,30 @@ async def _stream_argument_response(request: CreateArgumentativeDebateRequest) -
             "5. Do not summarize; use the exact words from the numbered sentences provided.\n"
         )
 
-    system_prompt = base_context + instructions    
-    messages = [{"role": "system", "content": system_prompt}]
-    
+    messages = [{"role": "system", "content": base_context + instructions}]
     full_response = ""
-    
+
     try:
         response_iterator = await litellm.acompletion(
             model=request.model_name,
             messages=messages,
             stream=True,
-            temperature=0.7 
+            temperature=0.7
         )
-        
         async for chunk in response_iterator:
             content = chunk.choices[0].delta.content or ""
             if content:
                 full_response += content
                 yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
-        
+
         citations = _extract_citations_from_response(full_response, story_sentences)
-        
         yield f"data: {json.dumps({'type': 'citations', 'citations': citations})}\n\n"
         yield "data: [DONE]\n\n"
-        
+
     except Exception as e:
         logger.error(f"Error streaming argument: {e}")
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
 
 @app.post("/debates/argumentative-debate")
 async def create_argumentative_debate(request: CreateArgumentativeDebateRequest):
@@ -264,6 +337,7 @@ async def create_argumentative_debate(request: CreateArgumentativeDebateRequest)
         _stream_argument_response(request),
         media_type="text/event-stream"
     )
+
 
 @app.websocket("/ws/debates/{debate_id}")
 async def websocket_debate(websocket: WebSocket, debate_id: uuid.UUID):
@@ -324,6 +398,7 @@ async def websocket_debate(websocket: WebSocket, debate_id: uuid.UUID):
     finally:
         ws_manager.disconnect(str(debate_id))
 
+
 @app.post("/debates/{expId}/human-ready")
 async def signal_human_ready(expId: str):
     try:
@@ -334,6 +409,7 @@ async def signal_human_ready(expId: str):
         logger.error(f"Failed to send ready signal: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/")
 async def root():
     return {
@@ -343,14 +419,16 @@ async def root():
         "features": ["celery", "rabbitmq", "websocket", "human-in-loop"]
     }
 
+
 def _prepare_hydra_config(request_data, agent_counts, llm_configs):
     actual_task = "custom" if request_data['custom_questions'] else request_data['task']
     config_dir = str(Path(__file__).parent.parent / "conf")
-    
+    _register_omegaconf_resolvers()
+
     with initialize_config_dir(config_dir=config_dir, version_base="1.1"):
         debate_type = request_data.get('debate_type', 'unknown')
         exp_name = request_data.get('name') or f"{debate_type}_{actual_task}"
-        
+
         overrides = [
             f"+task={actual_task}",
             f"+experiment.num_questions={request_data['num_questions']}",
@@ -360,14 +438,23 @@ def _prepare_hydra_config(request_data, agent_counts, llm_configs):
             f"++seed={request_data['seed']}",
             f"+agent_counts=[{','.join(map(str, agent_counts))}]",
         ]
-        
+
         for key, value in llm_configs.items():
             if value:
                 overrides.append(f"+llm_conf@{key}={value}")
-        
+
         hydra_cfg = compose(config_name="config", overrides=overrides)
-        OmegaConf.resolve(hydra_cfg)
-        return OmegaConf.to_container(hydra_cfg, resolve=True)
+        
+        try:
+            OmegaConf.resolve(hydra_cfg)
+            cfg_dict = OmegaConf.to_container(hydra_cfg, resolve=True)
+            cfg_dict = _deep_convert_to_python(cfg_dict)
+            return cfg_dict
+        except Exception as e:
+            logger.warning(f"OmegaConf resolution failed: {e}, using manual env resolution")
+            cfg_dict = OmegaConf.to_container(hydra_cfg, resolve=False)
+            return _resolve_env_vars_in_config(cfg_dict)
+
 
 def _load_datasets(other_datasets, questions_per_dataset, seed):
     all_questions = []
@@ -377,12 +464,11 @@ def _load_datasets(other_datasets, questions_per_dataset, seed):
         "math": "data/MATH_test.jsonl",
         "commonsense_qa": "data/commonsense_qa.json"
     }
-    
+
     for dataset_name in other_datasets:
         data_path = data_paths.get(dataset_name)
         if not data_path or not Path(data_path).exists():
             continue
-            
         dataset_questions = list(load_and_prepare_data(
             task_name=dataset_name,
             data_path=data_path,
@@ -392,6 +478,7 @@ def _load_datasets(other_datasets, questions_per_dataset, seed):
         all_questions.extend(dataset_questions)
     return all_questions
 
+
 @app.post("/debates", response_model=DebateResponse, status_code=201)
 async def create_debate(request: CreateDebateRequest):
     try:
@@ -400,7 +487,8 @@ async def create_debate(request: CreateDebateRequest):
             raise HTTPException(400, f"human_agent_index must be < {num_agents}")
 
         llm_models = [m for m in request.agent_models if m.lower() not in ['human-participant', 'human', 'mock/human']]
-        human_agent_indices = [i for i, m in enumerate(request.agent_models) if m.lower() in ['human-participant', 'human', 'mock/human']]
+        human_agent_indices = [i for i, m in enumerate(request.agent_models)
+                        if m.lower() in ['human-participant', 'human', 'mock/human']]
 
         if human_agent_indices and request.human_agent_index is None:
             request.human_agent_index = human_agent_indices[0]
@@ -414,7 +502,7 @@ async def create_debate(request: CreateDebateRequest):
 
         llm_configs_map = {}
         agent_counts = [0, 0, 0]
-        
+
         for i, model in enumerate(unique_mapped_models):
             if i < 3:
                 llm_configs_map[f"llm{i+1}"] = model
@@ -422,9 +510,9 @@ async def create_debate(request: CreateDebateRequest):
 
         request_dict = request.model_dump()
         loop = asyncio.get_running_loop()
-        
+
         hydra_cfg_dict = await loop.run_in_executor(
-            None, 
+            None,
             partial(_prepare_hydra_config, request_dict, agent_counts, llm_configs_map)
         )
 
@@ -458,7 +546,7 @@ async def create_debate(request: CreateDebateRequest):
 
         actual_task = "custom" if is_custom_run else (other_datasets[0] if other_datasets else request.task)
         domain_map = {
-            "custom": "custom", "gsm8k": "gsm8k", "math": "math", 
+            "custom": "custom", "gsm8k": "gsm8k", "math": "math",
             "mmlu": "mmlu", "commonsense_qa": "commonsense_qa"
         }
         domain = domain_map.get(actual_task, "math")
@@ -503,6 +591,9 @@ async def create_debate(request: CreateDebateRequest):
             )
             debate_id = debate.id
             created_at = debate.created_at
+        
+        if human_agent_indices:
+            await ws_manager.ensure_human_ready_queue(str(debate_id)) 
 
         from src.api.tasks import run_debate_task
         formatted_questions = []
@@ -551,16 +642,17 @@ async def create_debate(request: CreateDebateRequest):
         logger.error(f"Error creating debate: {e}", exc_info=True)
         raise HTTPException(500, detail=str(e))
 
+
 @app.get("/debates/{debate_id}/status")
 async def get_debate_status(debate_id: uuid.UUID):
     try:
         async with db_manager.get_session() as session:
             repo = DebateRepository(session)
             debate = await repo.get_debate(debate_id)
-            
+
             if not debate:
                 raise HTTPException(404, "Debate not found")
-            
+
             response = {
                 "debate_id": str(debate.id),
                 "status": debate.status,
@@ -570,7 +662,7 @@ async def get_debate_status(debate_id: uuid.UUID):
                 "websocket_connected": ws_manager.is_connected(str(debate_id)) if ws_manager else False,
                 "is_ready_for_websocket": debate.status in ["running", "queued", "pending"]
             }
-            
+
             if debate.celery_task_id:
                 try:
                     task_result = AsyncResult(debate.celery_task_id, app=celery_app)
@@ -578,13 +670,14 @@ async def get_debate_status(debate_id: uuid.UUID):
                     response["task_status"] = {"state": task_result.state, "info": task_result.info}
                 except Exception:
                     response["task_status"] = {"state": "UNKNOWN", "info": None}
-            
+
             return response
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Status check error: {e}")
         return {"debate_id": str(debate_id), "status": "error", "error": str(e)}
+
 
 @app.get("/debates/{debate_id}/results")
 async def get_debate_results(debate_id: uuid.UUID, repo: DebateRepository = Depends(get_debate_repository)):
@@ -620,18 +713,18 @@ async def get_debate_results(debate_id: uuid.UUID, repo: DebateRepository = Depe
         "questions": questions_data,
     }
 
+
 @app.post("/debates/{debate_id}/cancel")
 async def cancel_debate(debate_id: uuid.UUID, repo: DebateRepository = Depends(get_debate_repository)):
     debate = await repo.get_debate(debate_id)
     if not debate:
         raise HTTPException(404, "Debate not found")
-        
+
     if debate.celery_task_id:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, partial(celery_app.control.revoke, debate.celery_task_id, terminate=True))
-        
         await repo.update_debate_status(debate_id, "cancelled")
-        
+
         message_data = json.dumps({
             "debate_id": str(debate_id),
             "type": "debate_cancelled",
@@ -658,21 +751,22 @@ async def cancel_debate(debate_id: uuid.UUID, repo: DebateRepository = Depends(g
                     )
         except Exception as e:
             logger.error(f"Failed to publish cancel event: {e}")
-        
+
         return {"debate_id": str(debate_id), "status": "cancelled"}
-    
+
     raise HTTPException(400, "No active task found")
+
 
 @app.get("/health")
 async def health_check():
     inspect = celery_app.control.inspect()
     active_workers = inspect.active() or {}
-    
+
     try:
         rabbitmq_status = "connected" if ws_manager and ws_manager.connection and not ws_manager.connection.is_closed else "disconnected"
-    except:
+    except Exception:
         rabbitmq_status = "unknown"
-    
+
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
@@ -681,6 +775,7 @@ async def health_check():
         "rabbitmq": rabbitmq_status,
         "active_websockets": ws_manager.get_connection_count() if ws_manager else 0
     }
+
 
 @app.post("/debate/{debate_id}/human-response")
 async def submit_human_response_endpoint(debate_id: str, response: HumanResponseRequest):
@@ -695,30 +790,30 @@ async def submit_human_response_endpoint(debate_id: str, response: HumanResponse
             debate = await repo.get_debate(d_uuid)
             if not debate:
                 raise HTTPException(404, "Debate not found")
-        
+
         if debate.status not in ["running", "queued", "pending"]:
             raise HTTPException(400, f"Debate is not active (status: {debate.status})")
-        
+
         await ws_manager.store_human_response(
             debate_id=debate_id,
             response_text=response.response_text,
             extracted_answer=response.extracted_answer
         )
         return {"success": True, "message": "Human response submitted successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error submitting response: {e}")
         raise HTTPException(500, str(e))
 
+
 @app.post("/debates/replay", response_model=DebateResponse, status_code=201)
 async def replay_debate(request: ReplayDebateRequest):
     try:
-        debate_id_input = request.get_debate_id_str()
         config = request.original_config
         total_rounds = config.get("num_rounds", 3)
-        
+
         if request.start_from_round >= total_rounds:
             raise HTTPException(400, "Cannot start from or after the last round")
 
@@ -742,8 +837,8 @@ async def replay_debate(request: ReplayDebateRequest):
             created_at = debate.created_at
 
         questions = [{
-            "question": request.question_data.get("question_text"),
-            "answer": request.question_data.get("correct_answer"),
+            "question": request.question_data.get("question") or request.question_data.get("question_text"),
+            "answer": request.question_data.get("correct_answer") or request.question_data.get("answer"),
             "question_prompt": request.question_data.get("question_prompt"),
         }]
 
@@ -786,6 +881,7 @@ async def replay_debate(request: ReplayDebateRequest):
     except Exception as e:
         logger.error(f"Error creating replay: {e}")
         raise HTTPException(500, str(e))
+
 
 if __name__ == "__main__":
     import uvicorn

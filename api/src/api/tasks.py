@@ -6,7 +6,7 @@ import uuid
 import json
 import aio_pika
 import litellm
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from celery import Task
 from datetime import datetime
 from pathlib import Path
@@ -24,14 +24,85 @@ ACTIVE_ORCHESTRATORS: Dict[str, tuple[BasicDebateOrchestrator, float]] = {}
 ORCHESTRATOR_TIMEOUT = 600
 RABBITMQ_URL = os.getenv("CELERY_BROKER_URL", "amqp://guest:guest@localhost:5672/")
 
+_CONFIG_LOOKUP = None
+
+
+def _build_agent_models_from_counts(agent_counts_dict: dict) -> list:
+    """Rebuild agent_models in original per-agent index order, directly from
+    the '{model}_agent_{idx}' keys — no dependence on llm_conf array order."""
+    indexed = []
+    for key in agent_counts_dict.keys():
+        if '_agent_' not in key:
+            continue
+        base, idx_str = key.rsplit('_agent_', 1)
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            continue
+        indexed.append((idx, base))
+    indexed.sort(key=lambda x: x[0])
+    return [map_to_config_name(base) for _, base in indexed]
+
+def _build_config_lookup() -> Dict[str, str]:
+    """Build a case-insensitive lookup from config directory."""
+    global _CONFIG_LOOKUP
+    if _CONFIG_LOOKUP is not None:
+        return _CONFIG_LOOKUP
+    
+    config_dir = Path(__file__).parent.parent / "conf" / "llm_conf"
+    lookup = {}
+    
+    if config_dir.exists():
+        for f in config_dir.glob("*.yaml"):
+            name = f.stem
+            lookup[name] = name
+            lookup[name.lower()] = name
+            lookup[name.upper()] = name
+            normalized = name.lower().replace("-", "_").replace(".", "_")
+            lookup[normalized] = name
+    
+    lookup["human"] = "human_participant"
+    lookup["human-participant"] = "human_participant"
+    lookup["mock/human"] = "human_participant"
+    
+    _CONFIG_LOOKUP = lookup
+    logger.info(f"Built config lookup with {len(lookup)} entries")
+    return lookup
+
+
+def map_to_config_name(model_name: str) -> str:
+    """Map a model name to an actual config file name."""
+    if not model_name:
+        return model_name
+    
+    lookup = _build_config_lookup()
+    
+    if model_name in lookup:
+        return lookup[model_name]
+    
+    normalized = model_name.lower().replace("-", "_").replace(".", "_")
+    if normalized in lookup:
+        return lookup[normalized]
+    
+    for suffix in ["_instruct", "_chat", "_turbo", "_it"]:
+        if normalized.endswith(suffix):
+            base = normalized[:-len(suffix)]
+            if base in lookup:
+                return lookup[base]
+    
+    logger.warning(f"No config found for '{model_name}', returning as-is")
+    return model_name
+
+
 def cleanup_idle_orchestrators():
     current_time = time.time()
     to_remove = [
-        did for did, (_, last_act) in ACTIVE_ORCHESTRATORS.items() 
+        did for did, (_, last_act) in ACTIVE_ORCHESTRATORS.items()
         if current_time - last_act > ORCHESTRATOR_TIMEOUT
     ]
     for did in to_remove:
         ACTIVE_ORCHESTRATORS.pop(did, None)
+
 
 def get_or_create_orchestrator(debate_id: str) -> BasicDebateOrchestrator:
     cleanup_idle_orchestrators()
@@ -39,37 +110,43 @@ def get_or_create_orchestrator(debate_id: str) -> BasicDebateOrchestrator:
         orch, _ = ACTIVE_ORCHESTRATORS[debate_id]
         ACTIVE_ORCHESTRATORS[debate_id] = (orch, time.time())
         return orch
-    
     orch = BasicDebateOrchestrator()
     ACTIVE_ORCHESTRATORS[debate_id] = (orch, time.time())
     return orch
+
 
 def update_orchestrator_activity(debate_id: str):
     if debate_id in ACTIVE_ORCHESTRATORS:
         orch, _ = ACTIVE_ORCHESTRATORS[debate_id]
         ACTIVE_ORCHESTRATORS[debate_id] = (orch, time.time())
 
+
 def remove_orchestrator(debate_id: str):
     ACTIVE_ORCHESTRATORS.pop(debate_id, None)
+
 
 @celery_app.task(name="src.api.tasks.run_debate_task", bind=True, track_started=True)
 def run_debate_task(self, debate_id: str, debate_type: str = "basic_debate", hydra_cfg: dict = None, questions: list = None, num_rounds: int = 3, num_agents: int = 2, agent_models: list = None, human_agent_index: int = None, enhanced_metadata: dict = None, **kwargs):
     config_dict = hydra_cfg or {}
+    
+    mapped_agent_models = [map_to_config_name(m) for m in (agent_models or [])]
+    
     config_dict.update({
         'questions': questions or [],
         'num_rounds': num_rounds,
         'num_agents': num_agents,
-        'agent_models': agent_models,
+        'agent_models': mapped_agent_models,
+        'original_agent_models': agent_models,
         'human_agent_index': human_agent_index,
         'debate_type': debate_type,
         'enhanced_metadata': enhanced_metadata
     })
-
     try:
         return asyncio.run(_run_debate_async(debate_id, config_dict))
     except Exception:
         remove_orchestrator(debate_id)
         raise
+
 
 @celery_app.task(name="src.api.tasks.run_replay_task", bind=True, track_started=True)
 def run_replay_task(self, debate_id: str, debate_type: str = "basic_debate", original_config: dict = None, questions: list = None, num_rounds: int = 3, experiment_name: str = "replay_debate", previous_rounds: list = None, start_from_round: int = 0, replace_agent_index: int = None, replace_agent_name: str = None, enhanced_metadata: dict = None, **kwargs):
@@ -91,12 +168,36 @@ def run_replay_task(self, debate_id: str, debate_type: str = "basic_debate", ori
         remove_orchestrator(debate_id)
         raise
 
+
+def _remap_previous_round_responses(p_resps: dict, orchestrator, human_agent_index, replace_agent_name) -> dict:
+    """Remap a previous (pre-replay) round's responses, keyed by original agent
+    names, onto the current orchestrator agent names — so the replaced agent's
+    pre-replacement history lines up under its new name."""
+    remapped = {}
+    for a_idx, agent in enumerate(orchestrator.agents):
+        resp = None
+        if a_idx == human_agent_index and replace_agent_name in p_resps:
+            resp = p_resps[replace_agent_name]
+        else:
+            base = agent.name.split('_agent_')[0]
+            num = int(agent.name.split('_agent_')[1]) if '_agent_' in agent.name else 0
+            norm = normalize_model_name(base)
+            for orig in p_resps:
+                o_base = orig.split('_agent_')[0]
+                o_num = int(orig.split('_agent_')[1]) if '_agent_' in orig else 0
+                if normalize_model_name(o_base) == norm and o_num == num:
+                    resp = p_resps[orig]
+                    break
+        if resp is not None:
+            remapped[agent.name] = resp
+    return remapped
+
 async def _run_replay_async(debate_id: str, original_config: dict, questions: list, num_rounds: int, experiment_name: str, previous_rounds: list, start_from_round: int, replace_agent_index: int, replace_agent_name: str, enhanced_metadata: dict = None, **kwargs) -> dict:
-    human_agent_index = replace_agent_index
+    human_agent_index = None
     _validate_replay_config(original_config, start_from_round)
-    
+
     orchestrator = get_or_create_orchestrator(debate_id)
-    
+
     try:
         llm_configs_from_original = original_config.get("llm_conf", [])
         agent_counts_dict = original_config.get("agent_counts", {})
@@ -104,16 +205,41 @@ async def _run_replay_async(debate_id: str, original_config: dict, questions: li
         for key, count in agent_counts_dict.items():
             base = key.rsplit('_agent_', 1)[0] if '_agent_' in key else key
             aggregated_counts[base] = aggregated_counts.get(base, 0) + count
-            
+
+        aggregated_counts_norm = {normalize_model_name(k): v for k, v in aggregated_counts.items()}
         agent_models = []
         for llm_config in llm_configs_from_original:
             m_name = llm_config.get("modelName") or llm_config.get("model")
-            if m_name not in aggregated_counts:
+            norm_name = normalize_model_name(m_name)
+            if norm_name not in aggregated_counts_norm:
                 continue
             c_name = get_config_name_from_model(llm_config)
-            count = aggregated_counts[m_name]
+            count = aggregated_counts_norm[norm_name]
             agent_models.extend([c_name] * count)
-            
+        
+        built_from_indexed_counts = _build_agent_models_from_counts(agent_counts_dict)
+        expected_total = len(agent_counts_dict)
+
+        if built_from_indexed_counts and len(built_from_indexed_counts) >= expected_total:
+            agent_models = built_from_indexed_counts
+        elif not agent_models:
+            logger.warning(
+                f"Agent index parsing lost agents: got {len(built_from_indexed_counts)}, "
+                f"expected {expected_total}; falling back"
+            )
+            original_agent_models = original_config.get("agent_models", [])
+            agent_models = [map_to_config_name(m) for m in original_agent_models]
+
+        if not agent_models:
+            raise ValueError(
+                f"Could not resolve agent_models for replay of debate; "
+                f"agent_counts={agent_counts_dict}, llm_conf={llm_configs_from_original}"
+            )
+
+        original_human_indices = set(original_config.get("human_agent_indices") or [])
+        if original_config.get("human_agent_index") is not None:
+            original_human_indices.add(original_config["human_agent_index"])
+
         if human_agent_index is None and replace_agent_name:
             if '_agent_' in replace_agent_name:
                 base, num_str = replace_agent_name.rsplit('_agent_', 1)
@@ -132,9 +258,44 @@ async def _run_replay_async(debate_id: str, original_config: dict, questions: li
             else:
                 human_agent_index = _find_agent_index_by_name(agent_models, replace_agent_name)
 
-        if human_agent_index is not None:
-            agent_models[human_agent_index] = "human-participant"
-            
+        if replace_agent_name:
+            if '_agent_' in replace_agent_name:
+                base, num_str = replace_agent_name.rsplit('_agent_', 1)
+                num = int(num_str)
+                matching = next((k.rsplit('_agent_', 1)[0] for k in agent_counts_dict if k.startswith(base)), None)
+                if matching:
+                    target_conf = next((get_config_name_from_model(c) for c in llm_configs_from_original if (c.get("modelName") or c.get("model")) == matching), None)
+                    if target_conf:
+                        occ = 0
+                        for idx, m in enumerate(agent_models):
+                            if m == target_conf:
+                                if occ == num:
+                                    human_agent_index = idx
+                                    break
+                                occ += 1
+            else:
+                human_agent_index = _find_agent_index_by_name(agent_models, replace_agent_name)
+
+        # only trust the raw index if name-based resolution didn't find anything
+        if human_agent_index is None and replace_agent_index is not None:
+            human_agent_index = replace_agent_index
+
+        if replace_agent_index is not None and replace_agent_index < len(agent_models):
+            if replace_agent_index in original_human_indices:
+                if not replace_agent_name:
+                    raise ValueError("replace_agent_name (target model) required when replacing a human")
+                agent_models[replace_agent_index] = map_to_config_name(replace_agent_name)
+                human_agent_index = None
+            else:
+                agent_models[replace_agent_index] = "human_participant"
+                human_agent_index = replace_agent_index
+        elif replace_agent_name and not original_human_indices and human_agent_index is not None:
+            agent_models[human_agent_index] = "human_participant"
+        elif human_agent_index is not None and human_agent_index < len(agent_models):
+            agent_models[human_agent_index] = "human_participant"
+
+        logger.info(f"Replay agent_models after mapping: {agent_models}")
+
         hydra_cfg = _build_hydra_config_for_replay_simple(original_config, agent_models, num_rounds, experiment_name)
         if llm_configs_from_original:
             hydra_cfg['llm_conf'] = llm_configs_from_original
@@ -142,14 +303,14 @@ async def _run_replay_async(debate_id: str, original_config: dict, questions: li
         connection = await aio_pika.connect_robust(RABBITMQ_URL)
         async with connection:
             channel = await connection.channel()
-            
+
             human_response_exchange = await channel.declare_exchange('human_responses', aio_pika.ExchangeType.DIRECT, durable=True)
             human_response_queue = await channel.declare_queue(f'human_response_{debate_id}', durable=True, auto_delete=False)
             await human_response_queue.bind(human_response_exchange, routing_key=debate_id)
-            
+
             human_ready_queue = await channel.declare_queue(f'human_ready_{debate_id}', durable=True, auto_delete=False)
             await human_ready_queue.bind(human_response_exchange, routing_key=f"{debate_id}_ready")
-            
+
             try:
                 if orchestrator.status == "initialized":
                     await orchestrator.initialize_from_hydra(
@@ -164,24 +325,24 @@ async def _run_replay_async(debate_id: str, original_config: dict, questions: li
                     if enhanced_metadata:
                         await store_wandb_metadata(debate_id, enhanced_metadata, hydra_cfg)
 
-                await _broadcast_debate_event(debate_id, "waiting_for_human_connection", {"message": "Please connect to continue"})
-
-                try:
-                    async with human_ready_queue.iterator() as queue_iter:
-                        async for message in queue_iter:
-                            async with message.process():
-                                break
-                except Exception:
-                    return None
+                if human_agent_index is not None:
+                    await _broadcast_debate_event(debate_id, "waiting_for_human_connection", {"message": "Please connect to continue"})
+                    try:
+                        async with human_ready_queue.iterator() as queue_iter:
+                            async for message in queue_iter:
+                                async with message.process():
+                                    break
+                    except Exception:
+                        return None
 
                 for question_idx, q_data in enumerate(questions):
-                    q_text = q_data.get("question", "")
+                    q_text = q_data.get("question") or ""
                     q_prompt = q_data.get("question_prompt")
                     ans = q_data.get("answer", "")
-                    
+
                     q_session = await _create_question_and_session(debate_id, q_data, num_rounds, is_replay=True)
                     orchestrator.current_question_session_id = q_session.id
-                    
+
                     for agent in orchestrator.agents:
                         if hasattr(agent, 'set_instruction'):
                             agent.set_instruction(q_text)
@@ -191,11 +352,13 @@ async def _run_replay_async(debate_id: str, original_config: dict, questions: li
                         for idx in range(start_from_round):
                             if idx < len(previous_rounds):
                                 p_resps = previous_rounds[idx].get('responses', {})
-                                for a_idx, agent in enumerate(orchestrator.agents):
-                                    resp = None
-                                    if a_idx == human_agent_index and replace_agent_name in p_resps:
-                                        resp = p_resps[replace_agent_name]
-                                    else:
+                                remapped = _remap_previous_round_responses(
+                                    p_resps, orchestrator, human_agent_index, replace_agent_name
+                                )
+                                replayed_responses[idx] = remapped
+                                for agent in orchestrator.agents:
+                                    resp = remapped.get(agent.name)
+                                    if resp is None:
                                         base = agent.name.split('_agent_')[0]
                                         num = int(agent.name.split('_agent_')[1]) if '_agent_' in agent.name else 0
                                         norm = normalize_model_name(base)
@@ -207,14 +370,37 @@ async def _run_replay_async(debate_id: str, original_config: dict, questions: li
                                                 break
                                     if resp and hasattr(agent, 'answer_history'):
                                         agent.answer_history.append(resp)
+                                    else:
+                                        base = agent.name.split('_agent_')[0]
+                                        num = int(agent.name.split('_agent_')[1]) if '_agent_' in agent.name else 0
+                                        norm = normalize_model_name(base)
+                                        for orig in p_resps:
+                                            o_base = orig.split('_agent_')[0]
+                                            o_num = int(orig.split('_agent_')[1]) if '_agent_' in orig else 0
+                                            if normalize_model_name(o_base) == norm and o_num == num:
+                                                resp = p_resps[orig]
+                                                break
+
+                    from src.environments.debate.adts import DebateRound
+                    for idx in range(start_from_round):
+                        if idx in replayed_responses and replayed_responses[idx]:
+                            hist_round = DebateRound(round_number=idx)
+                            for agent_name, resp in replayed_responses[idx].items():
+                                hist_round.add_response(agent_name, resp)
+                            await orchestrator._store_round(
+                                round_data=hist_round,
+                                correct_answer=ans,
+                                human_agent_index=None,
+                                human_extracted_answer=None
+                            )
 
                     for round_num in range(start_from_round, num_rounds):
                         update_orchestrator_activity(debate_id)
                         all_prev = {}
                         for p_idx in range(round_num):
                             rk = f"round_{p_idx}"
-                            if p_idx < start_from_round and previous_rounds:
-                                all_prev[rk] = previous_rounds[p_idx].get('responses', {})
+                            if p_idx in replayed_responses:
+                                all_prev[rk] = replayed_responses[p_idx]
                             elif p_idx >= start_from_round and p_idx in replayed_responses:
                                 all_prev[rk] = replayed_responses[p_idx]
 
@@ -237,34 +423,35 @@ async def _run_replay_async(debate_id: str, original_config: dict, questions: li
 
                         human_resp_text = None
                         human_ans_ext = None
-                        
-                        try:
-                            async with human_response_queue.iterator() as q_iter:
-                                async for message in q_iter:
-                                    async with message.process():
-                                        data = json.loads(message.body.decode())
-                                        human_resp_text = data['response_text']
-                                        human_ans_ext = data.get('extracted_answer')
-                                        break
-                        except Exception:
-                            raise TimeoutError("Failed to get human response")
-                        
-                        update_orchestrator_activity(debate_id)
-                        
-                        if orchestrator.human_agent_name:
-                            round_res.add_response(orchestrator.human_agent_name, human_resp_text)
-                            h_agent = orchestrator.agents[human_agent_index]
-                            if hasattr(h_agent, 'answer_history'):
-                                h_agent.answer_history.append(human_resp_text)
+
+                        if human_agent_index is not None:
+                            try:
+                                async with human_response_queue.iterator() as q_iter:
+                                    async for message in q_iter:
+                                        async with message.process():
+                                            data = json.loads(message.body.decode())
+                                            human_resp_text = data['response_text']
+                                            human_ans_ext = data.get('extracted_answer')
+                                            break
+                            except Exception:
+                                raise TimeoutError("Failed to get human response")
+
+                            update_orchestrator_activity(debate_id)
+
+                            if orchestrator.human_agent_name:
+                                round_res.add_response(orchestrator.human_agent_name, human_resp_text)
+                                h_agent = orchestrator.agents[human_agent_index]
+                                if hasattr(h_agent, 'answer_history'):
+                                    h_agent.answer_history.append(human_resp_text)
 
                         replayed_responses[round_num] = round_res.responses.copy()
-                        
+
                         await _broadcast_debate_event(debate_id, "round_replayed", {
                             "question_index": question_idx,
                             "round_number": round_num,
                             "responses": round_res.responses
                         })
-                        
+
                         await orchestrator._store_round(
                             round_data=round_res,
                             correct_answer=ans,
@@ -274,10 +461,10 @@ async def _run_replay_async(debate_id: str, original_config: dict, questions: li
 
                     await orchestrator._complete_question_session()
                 await orchestrator._complete_debate()
-                
+
                 await _broadcast_debate_event(debate_id, "debate_completed", {"debate_id": debate_id, "questions_processed": len(questions)})
                 remove_orchestrator(debate_id)
-                
+
                 return {"status": "replay_completed", "debate_id": debate_id}
 
             finally:
@@ -292,11 +479,15 @@ async def _run_replay_async(debate_id: str, original_config: dict, questions: li
         remove_orchestrator(debate_id)
         raise
 
+
 def _build_hydra_config_for_replay_simple(original_config, agent_models, num_rounds, experiment_name):
     task = original_config.get("task", "gsm8k")
     seed = original_config.get("seed", 0)
-    unique = list(set([m for m in agent_models if normalize_model_name(m) != 'human-participant']))
     
+    mapped_models = [map_to_config_name(m) for m in agent_models]
+    
+    unique = list(set([m for m in mapped_models if m != 'human_participant']))
+
     overrides = [
         f"+task={task}",
         f"+experiment.num_questions=1",
@@ -305,61 +496,72 @@ def _build_hydra_config_for_replay_simple(original_config, agent_models, num_rou
         f"+cost_check={False}",
         f"++seed={seed}",
     ]
-    
+
     for idx, m in enumerate(unique[:3]):
-        overrides.append(f"+llm_conf@llm{idx+1}={api_format_to_config_name(m)}")
-    
+        mapped = map_to_config_name(m)
+        overrides.append(f"+llm_conf@llm{idx+1}={mapped}")
+
+    logger.info(f"Hydra overrides: {overrides}")
+
     config_dir = str(Path(__file__).parent.parent / "conf")
     with initialize_config_dir(config_dir=config_dir, version_base="1.1"):
         hydra_cfg = compose(config_name="config", overrides=overrides)
         OmegaConf.resolve(hydra_cfg)
     return OmegaConf.to_container(hydra_cfg, resolve=True)
 
+
 def normalize_model_name(name: str) -> str:
+    if not name:
+        return ""
     norm = name.lower().replace('_', '-').replace('/', '-').replace('.', '-')
     for p in ['vec-', 'together-']:
-        if norm.startswith(p): norm = norm[len(p):]
+        if norm.startswith(p):
+            norm = norm[len(p):]
     for s in ['-chat', '-instruct', '-turbo']:
-        if norm.endswith(s): norm = norm[:-len(s)]
+        if norm.endswith(s):
+            norm = norm[:-len(s)]
+    if norm in ['human-participant', 'human', 'mock-human']:
+        return 'human-participant'
     return norm.strip('-')
 
-def get_config_name_from_model(model_config: dict) -> str:
-    name = (model_config.get("modelName") or model_config.get("model", "")).lower().replace("-", "_").replace(".", "_")
-    if "human" in name: return "human-participant"
-    if "llama" in name and "3" in name and "8b" in name: return "vec_llama_3_1_8B" if "vec" in name else "llama_3_1_8B"
-    if "mistral" in name and "7b" in name: return "vec_mistral_7B" if "vec" in name else "mistral_7B"
-    if "gpt_4o_mini" in name: return "gpt_4o_mini"
-    if "gpt_3_5_turbo" in name: return "gpt_3_5_turbo"
-    return name
 
-def api_format_to_config_name(name: str) -> str:
-    if not name or name == 'human-participant': return name
-    return name.replace('-', '_').replace('.', '_')
+def get_config_name_from_model(model_config: dict) -> str:
+    name = model_config.get("modelName") or model_config.get("model", "")
+    if "human" in name.lower():
+        return "human_participant"
+    return map_to_config_name(name)
+
 
 def _find_agent_index_by_name(agent_models: list, agent_name: str) -> int:
     target = normalize_model_name(agent_name)
     for i, m in enumerate(agent_models):
-        if normalize_model_name(m) == target: return i
+        if normalize_model_name(m) == target:
+            return i
     return None
 
+
 def _validate_replay_config(cfg: dict, start_round: int):
-    if not cfg: raise ValueError("Config empty")
-    if start_round >= cfg.get("num_rounds", 0): raise ValueError("Start round >= num rounds")
+    if not cfg:
+        raise ValueError("Config empty")
+    num_rounds = cfg.get("num_rounds", 0)
+    if num_rounds > 0 and start_round >= num_rounds:
+        raise ValueError("Start round >= num rounds")
+
 
 async def _run_debate_async(debate_id: str, config_dict: dict) -> Dict[str, Any]:
     orchestrator = get_or_create_orchestrator(debate_id)
     questions = config_dict.get('questions', [])
     agent_models = config_dict.get('agent_models', [])
     human_idx = config_dict.get('human_agent_index')
-    
+
     if human_idx is None and agent_models:
         for i, m in enumerate(agent_models):
-            if m.lower() in ['human-participant', 'human', 'mock/human']:
+            if m.lower() in ['human-participant', 'human', 'mock/human', 'human_participant']:
                 human_idx = i
                 break
 
     connection = await aio_pika.connect_robust(RABBITMQ_URL)
-    
+
     async with connection:
         channel = await connection.channel()
         h_resp_q = None
@@ -372,16 +574,16 @@ async def _run_debate_async(debate_id: str, config_dict: dict) -> Dict[str, Any]
                 await h_resp_q.bind(exc, routing_key=debate_id)
                 h_ready_q = await channel.declare_queue(f'human_ready_{debate_id}', durable=True, auto_delete=False)
                 await h_ready_q.bind(exc, routing_key=f"{debate_id}_ready")
-                
+
                 await _broadcast_debate_event(debate_id, "waiting_for_human_connection", {"message": "Connect"})
-                
+
                 try:
                     async with h_ready_q.iterator() as iter:
                         async for msg in iter:
                             async with msg.process(): break
                 except Exception:
                     raise Exception("Human connect timeout")
-            
+
             if orchestrator.status == "initialized":
                 await orchestrator.initialize_from_hydra(
                     debate_id=uuid.UUID(debate_id),
@@ -394,7 +596,7 @@ async def _run_debate_async(debate_id: str, config_dict: dict) -> Dict[str, Any]
                 )
                 if config_dict.get('enhanced_metadata'):
                     await store_wandb_metadata(debate_id, config_dict['enhanced_metadata'], config_dict)
-                
+
                 await _broadcast_debate_event(debate_id, "debate_started", {
                     "debate_id": debate_id, "num_questions": len(questions)
                 })
@@ -404,18 +606,17 @@ async def _run_debate_async(debate_id: str, config_dict: dict) -> Dict[str, Any]
                 ans = str(q_data.get('answer', ''))
                 q_sess = await _create_question_and_session(debate_id, q_data, config_dict.get('num_rounds', 3))
                 orchestrator.current_question_session_id = q_sess.id
-                
+
                 await _broadcast_debate_event(debate_id, "question_started", {"question_index": q_idx, "question_text": q_text})
-                
+
                 for agent in orchestrator.agents:
                     await agent.reset()
                     agent.set_instruction(q_data.get('question_prompt') or q_text)
-                
+
                 for r_num in range(config_dict.get('num_rounds', 3)):
                     update_orchestrator_activity(debate_id)
                     await _broadcast_debate_event(debate_id, "round_started", {"round_number": r_num})
-                    
-                    # Initialize variables to prevent UnboundLocalError
+
                     res = None
                     h_resp, h_ext = None, None
 
@@ -434,9 +635,9 @@ async def _run_debate_async(debate_id: str, config_dict: dict) -> Dict[str, Any]
                             "round_number": r_num,
                             "question_text": q_text,
                             "previous_rounds": all_previous_rounds,
-                            "current_round_index": r_num 
+                            "current_round_index": r_num
                         })
-                        
+
                         try:
                             async with h_resp_q.iterator() as iter:
                                 async for msg in iter:
@@ -448,12 +649,12 @@ async def _run_debate_async(debate_id: str, config_dict: dict) -> Dict[str, Any]
                                         break
                         except Exception:
                             raise TimeoutError("Human response timeout")
-                        
+
                         res = await orchestrator._run_debate_round(q_text, None, r_num, human_idx)
                         await _broadcast_debate_event(debate_id, "ai_responses_ready", {
-                            "round_number": r_num, 
+                            "round_number": r_num,
                             "ai_responses": {
-                                k: v for k, v in res.responses.items() 
+                                k: v for k, v in res.responses.items()
                                 if k != orchestrator.human_agent_name
                             }
                         })
@@ -465,10 +666,10 @@ async def _run_debate_async(debate_id: str, config_dict: dict) -> Dict[str, Any]
                     if res is not None:
                         await orchestrator._store_round(res, ans, human_idx, h_ext)
                         await _broadcast_debate_event(debate_id, "round_completed", {"round_number": r_num, "responses": res.responses})
-                
+
                 await orchestrator._complete_question_session()
                 await _broadcast_debate_event(debate_id, "question_completed", {"question_index": q_idx})
-            
+
             await orchestrator._complete_debate()
             await _broadcast_debate_event(debate_id, "debate_completed", {"debate_id": debate_id})
             remove_orchestrator(debate_id)
@@ -485,13 +686,14 @@ async def _run_debate_async(debate_id: str, config_dict: dict) -> Dict[str, Any]
             except Exception as e:
                 logger.error(f"Error deleting queues: {e}")
 
+
 async def _create_question_and_session(debate_id, q_data, num_rounds, is_replay=False):
     import hashlib
     q_text = str(q_data.get('question', ''))
     ans = str(q_data.get('answer', ''))
     suffix = f"_replay_{time.time()}" if is_replay else ""
     qid = int(hashlib.sha256(f"{debate_id}_{q_text}_{ans}{suffix}".encode()).hexdigest()[:8], 16) % 2147483647
-    
+
     db = DatabaseManager()
     async with db.get_session() as s:
         r = DebateRepository(s)
@@ -501,6 +703,7 @@ async def _create_question_and_session(debate_id, q_data, num_rounds, is_replay=
         await s.commit()
         return qs
 
+
 async def _broadcast_debate_event(debate_id, etype, data):
     try:
         connection = await aio_pika.connect_robust(RABBITMQ_URL)
@@ -509,7 +712,9 @@ async def _broadcast_debate_event(debate_id, etype, data):
             ex = await ch.declare_exchange('debate_events', aio_pika.ExchangeType.TOPIC, durable=False)
             msg = aio_pika.Message(json.dumps({"type": etype, "timestamp": time.time(), "data": data, "debate_id": debate_id}).encode())
             await ex.publish(msg, routing_key=f'debate.events.{debate_id}')
-    except Exception: pass
+    except Exception:
+        pass
+
 
 async def store_wandb_metadata(debate_id, meta, cfg):
     try:
@@ -518,7 +723,9 @@ async def store_wandb_metadata(debate_id, meta, cfg):
         async with db.get_session() as s:
             await s.execute(update(Debate).where(Debate.id == uuid.UUID(debate_id)).values(wandb_metadata={"parsed_args": p_args}))
             await s.commit()
-    except Exception: pass
+    except Exception:
+        pass
+
 
 @celery_app.task(name="src.api.tasks.submit_human_response")
 def submit_human_response(debate_id: str, response_text: str, extracted_answer: str):
@@ -532,19 +739,22 @@ def submit_human_response(debate_id: str, response_text: str, extracted_answer: 
                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT
             )
             await ex.publish(msg, routing_key=debate_id)
-    
+
     try:
         asyncio.run(_publish())
         return {"success": True}
     except Exception as e:
         raise ValueError(f"Failed to queue response: {str(e)}")
 
+
 @celery_app.task(name="src.api.tasks.get_debate_status")
 def get_debate_status(debate_id: str) -> Dict[str, Any]:
     cleanup_idle_orchestrators()
-    if debate_id not in ACTIVE_ORCHESTRATORS: return {"status": "not_found"}
+    if debate_id not in ACTIVE_ORCHESTRATORS:
+        return {"status": "not_found"}
     orch, last = ACTIVE_ORCHESTRATORS[debate_id]
     return {"status": "active", "debate_status": orch.get_status(), "last_activity": last}
+
 
 @celery_app.task(name="src.api.tasks.cleanup_orchestrators_task")
 def cleanup_orchestrators_task():

@@ -1,108 +1,94 @@
-import attrs
-from abc import ABC, abstractmethod
-from pydantic import BaseModel, Field
-from typing import Any, Optional, Dict
-from src.llm_api.llm import LLMClient
-from src.llm_api import PromptConfig, Message, LLMConfig
-from src.environments.base_env import EnvObservation
-from omegaconf import DictConfig
+import logging
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass, field
+from omegaconf import DictConfig, ListConfig
 
-class AgentConfig(BaseModel):
-    model_config = {"arbitrary_types_allowed": True}
+from src.llm_api.base_llm_abstractions import PromptConfig, LLMConfig
+from src.llm_api.llm import LLM
+
+logger = logging.getLogger(__name__)
+
+
+def _deep_convert_to_python(obj: Any) -> Any:
+    if isinstance(obj, DictConfig):
+        return {k: _deep_convert_to_python(v) for k, v in obj.items()}
+    elif isinstance(obj, ListConfig):
+        return [_deep_convert_to_python(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: _deep_convert_to_python(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_deep_convert_to_python(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(_deep_convert_to_python(item) for item in obj)
+    else:
+        return obj
+
+
+@dataclass
+class AgentConfig:
     prompt_config: PromptConfig
-    name: Optional[str] = "agent"
     llm_config: Optional[LLMConfig] = None
-    few_shot_num_samples: Optional[int] = None
+    name: str = "agent"
+    
+    def __post_init__(self):
+        if self.prompt_config and hasattr(self.prompt_config, 'partials'):
+            self.prompt_config.partials = _deep_convert_to_python(self.prompt_config.partials)
 
-# Base agent class
-@attrs.define
-class BaseAgent(ABC):
-    config: AgentConfig
-    # placeholders for parameters that will be initialized from the config
-    llm: LLMClient = attrs.field(init=False, default=None)
-    name: str = attrs.field(init=False)
-    # basic memory that is just the list of messages for now
-    msg_history: list[Message] = attrs.field(factory=list)
-    
-    def __attrs_post_init__(self):
-        # just use the agent config to setup the agent specific variables like name, etc.
-        self.name = self.config.name
-    
-    def _init_llm(self):
-        """Initialize LLM client if config is available."""
-        if self.config.llm_config is not None:
-            self.llm = LLMClient(config=self.config.llm_config)
-    
-    def get_system_prompt(self) -> Message:
-        return Message(role="system", content=self.config.prompt_config.system_prompt)
+
+class BaseAgent:
+    def __init__(self, config: AgentConfig):
+        self.config = config
+        self.name = config.name
+        self.llm: Optional[LLM] = None
+        self.msg_history: List[Dict[str, str]] = []
+        self.answer_history: List[str] = []
+        self._instruction: str = ""
     
     async def build(self):
-        """
-        The method that uses the config to setup the agents and checks that they are working alright.
-        Now async to support async initialization patterns.
-        For human agents (llm_config=None), this is a no-op.
-        """
-        if self.config.llm_config is not None:
-            self._init_llm()
-        # If it's a human agent, just return without doing anything
-    
-    def add_to_msg_history(self, message: Message):
-        self.msg_history.append(message)
-    
-    def _reset_msg_history(self):
-        self.msg_history = []
-        self.add_to_msg_history(self.get_system_prompt())
+        if self.config.llm_config:
+            self.llm = LLM(self.config.llm_config)
     
     async def reset(self):
-        """Reset agent state. Now async for consistency."""
-        self._reset_msg_history()
+        self.msg_history = []
+        self.answer_history = []
+        self._instruction = ""
+        
+        if self.config.prompt_config and self.config.prompt_config.system_prompt:
+            self.msg_history.append({
+                "role": "system",
+                "content": self.config.prompt_config.system_prompt
+            })
     
-    @abstractmethod
-    async def completion(self, **kwargs):
-        """
-        Use the system prompt and the user payload to get a completion from the LLM
-        """
-        pass
+    def set_instruction(self, instruction: str):
+        self._instruction = instruction
+        if self.msg_history and self.msg_history[-1].get("role") == "user":
+            self.msg_history[-1]["content"] = instruction
+        else:
+            self.msg_history.append({
+                "role": "user", 
+                "content": instruction
+            })
     
-    async def instruction_completion(self, payload: str):
-        """
-        Use the system prompt and the user payload to get a completion from the LLM
-        """
-        if self.llm is None:
-            raise RuntimeError(f"Agent {self.name} has no LLM client initialized")
-        return await self.llm(
-            messages=[
-                Message(role="system", content=self.config.prompt_config.system_prompt),
-                Message(role="user", content=payload),
-            ]
-        )
+    def add_message(self, role: str, content: str):
+        self.msg_history.append({
+            "role": role,
+            "content": content
+        })
     
-    async def chat_completion(self):
-        """
-        Use the system prompt and the user payload to get a completion from the LLM
-        """
-        if self.llm is None:
-            raise RuntimeError(f"Agent {self.name} has no LLM client initialized")
-        return await self.llm(messages=self.msg_history)
+    def latest_response(self) -> str:
+        if self.answer_history:
+            return self.answer_history[-1]
+        return ""
     
-    @abstractmethod
-    async def act(self):
-        # construct the message
-        # make the call to LLM
-        # parse the response
-        pass
+    async def chat_completion(self) -> Any:
+        if not self.llm:
+            raise ValueError(f"Agent {self.name} has no LLM configured")
+        
+        messages = _deep_convert_to_python(self.msg_history)
+        return await self.llm(messages=messages)
     
-    def print_msg_history(self, color_output: bool = True, indent: int = 2) -> None:
-        """
-        Print the message history in a readable format.
-        Args:
-            color_output: Whether to use colored output
-            indent: Number of spaces to indent content
-        """
-        from src.utils.formatting import print_message_history
-        print_message_history(
-            msg_history=self.msg_history,
-            agent_name=self.name,
-            color_output=color_output,
-            indent=indent,
-        )
+    async def generate_answer(self) -> str:
+        raise NotImplementedError("Subclasses must implement generate_answer")
+    
+    async def extract_answer_from_response(self, response: str) -> str:
+        return response

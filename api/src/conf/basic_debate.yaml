@@ -1,10 +1,11 @@
 defaults:
   - _self_
-  - task: ??? # mmlu, gsm8k, math, commonsense_qa, ...
+  - task: ??? # mmlu, mmlu_pro, gsm8k, math, commonsense_qa, ...
   - agents/debate@agent_prompts: basic
-  - llm_conf@llm1: vec_llama_3_1_8B
-  - llm_conf@llm2: vec_mistral_7B
-  # - llm_conf@llm2: gpt_3_5_turbo
+
+  - llm_conf@llm1: gpt_5_nano #gpt-5 #llama_3_1_8B
+  - llm_conf@llm2: gpt_5_nano
+  - llm_conf@llm3: gpt_5_nano
 
 # Experiment configuration
 experiment:
@@ -17,7 +18,7 @@ experiment:
   log_single_results: False # whether to log individual debate results
 
 # Agent counts:
-agent_counts: [1, 0] # [llm1, llm2, ...]
+agent_counts: [1, 1, 0] # [llm1, llm2, ...]
 
 # Agent type configurations
 agent_types:
@@ -35,6 +36,13 @@ agent_types:
       partials: ${agent_prompts.partials}
       additional_partials: ${task.partials}
     llm_config: ${llm2} # Using GPT-4o-mini config
+  - name: "${llm3.language_models.0.model_name}_agent" # dynamically use the model name
+    count: ${agent_counts.2} # Number of instances of this agent type
+    prompts:
+      system_prompt: ${agent_prompts.system_prompt}
+      partials: ${agent_prompts.partials}
+      additional_partials: ${task.partials}
+    llm_config: ${llm3} # Using GPT-4o-mini config
 
 # Checkpointing configuration
 checkpoint:

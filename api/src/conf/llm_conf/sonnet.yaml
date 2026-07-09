@@ -1,0 +1,16 @@
+# check https://docs.litellm.ai/docs/routing for more details on how to configure multiple endpoints
+
+language_models:
+  - model_name: "sonnet-4.6"
+    litellm_params:
+      model: "openrouter/anthropic/claude-sonnet-4-6" # the actual model endpoint
+      timeout: 300
+      num_retries: 15
+      rpm: 1000
+
+completion_params:
+  max_completion_tokens: 16384
+  # extra_body:
+  #   reasoning:
+  #     effort: "low"
+  # etc etc.

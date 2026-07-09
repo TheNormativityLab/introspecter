@@ -1,0 +1,12 @@
+# check https://docs.litellm.ai/docs/routing for more details on how to configure multiple endpoints
+
+language_models:
+  - model_name: "gemma-4-31b-it"
+    litellm_params:
+      model: "openrouter/google/gemma-4-31b-it" # the actual model endpoint
+      timeout: 300
+      num_retries: 15
+      rpm: 1000
+
+completion_params:
+  max_tokens: 16384

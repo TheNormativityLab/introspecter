@@ -1,15 +1,14 @@
-# check https://docs.litellm.ai/docs/routing for more details on how to configure multiple endpoints
+# gpt-4o-mini via the OpenAI API directly.
+# Routes through litellm using OPENAI_API_KEY (not OpenRouter).
+# litellm provider docs: https://docs.litellm.ai/docs/providers/openai
 
 language_models:
   - model_name: "gpt-4o-mini"
     litellm_params:
-      model: "gpt-4o-mini"
+      model: "openrouter/openai/gpt-4o-mini"
       timeout: 300
-      num_retries: 3
+      num_retries: 5
       rpm: 1000
 
 completion_params:
-  # temperature: 0.1
-  top_p: 0.9
-  max_tokens: 2048
-  # etc etc.
+  max_tokens: 4096

@@ -1,0 +1,14 @@
+# Llama 3.2 3B Instruct via OpenRouter.
+# litellm provider docs: https://docs.litellm.ai/docs/providers/openrouter
+# Verify the exact slug on https://openrouter.ai/models if calls 404.
+
+language_models:
+  - model_name: "llama-3.2-3b-instruct"
+    litellm_params:
+      model: "openrouter/meta-llama/llama-3.2-3b-instruct"
+      timeout: 300
+      num_retries: 5
+      rpm: 1000
+
+completion_params:
+  max_tokens: 4096
