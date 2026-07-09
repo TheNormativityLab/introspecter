@@ -5,19 +5,17 @@ import {
   appRoutesPrefix,
   userRoutePrefix,
   debateRoutePrefix,
+  agentRoutePrefix
 } from "./router/routes";
 import { userRouter } from "./router/users/index";
+import { agentRouter } from "./router/agent/index";
 import { debateRouter } from "./router/debates/index";
 import { argumentativeRouter } from "./router/argumentative-debate/index";
 const app = express();
 
+app.use(morgan("dev"));
 app.use(express.json());
-// app.use(morgan(':remote-addr - :remote-user [:date[clf]] ":method :url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent" - :response-time ms - :total-time[digits] ms'));
-// app.use((req, res, next) => {
-//   console.log(`Incoming request: ${req.method} ${req.originalUrl}`);
-//   next();
-// });
-
+app.use(appRoutesPrefix + agentRoutePrefix, agentRouter);
 app.use(appRoutesPrefix + userRoutePrefix, userRouter);
 app.use(appRoutesPrefix + debateRoutePrefix, debateRouter);
 app.use(appRoutesPrefix + debateRoutePrefix, argumentativeRouter);

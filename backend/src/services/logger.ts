@@ -1,59 +1,33 @@
-import { createLogger, format, transports } from 'winston';
+import winston from 'winston';
 
-const { File, Console } = transports;
-const { combine, timestamp, json, colorize, printf, errors } = format;
+const safeStringify = (obj: any): string => {
+  const seen = new WeakSet();
+  return JSON.stringify(obj, (key, value) => {
+    if (typeof value === 'object' && value !== null) {
+      if (seen.has(value)) {
+        return '[Circular]';
+      }
+      seen.add(value);
+    }
+    if (key === 'socket' || key === 'req' || key === 'res' || key === '_httpMessage') {
+      return '[Object]';
+    }
+    return value;
+  });
+};
 
-const filterInternalMetadata = format((info) => {
-  const { level, message, timestamp, stack, ...rest } = info;
-  const stringifiedRest = JSON.stringify(rest);
-  if (stringifiedRest === '{}') {
-    info.metadata = null;
-  } else {
-    info.metadata = rest;
-  }
-  return info;
+const customFormat = winston.format.printf(({ level, message, timestamp, ...rest }) => {
+  const stringifiedRest = Object.keys(rest).length ? safeStringify(rest) : '';
+  return `${timestamp} [${level.toUpperCase()}] ${message} ${stringifiedRest}`;
 });
 
-const devFormat = printf(({ level, message, timestamp, stack, metadata }) => {
-  const msg = stack || message;
-  let metaString = '';
-  
-  if (metadata && Object.keys(metadata).length > 0) {
-    metaString = `\n${JSON.stringify(metadata, null, 2)}`;
-  }
-  
-  return `${timestamp} ${level}: ${msg}${metaString}`;
-});
-
-const logger = createLogger({
-  level: 'info',
-  format: combine(
-    timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-    errors({ stack: true }), 
-    filterInternalMetadata()
+export const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    customFormat
   ),
+  transports: [
+    new winston.transports.Console()
+  ]
 });
-
-if (process.env.NODE_ENV === 'production') {
-  const fileFormat = combine(timestamp(), json());
-  
-  logger.add(new File({
-    filename: './logs/error.log',
-    level: 'error',
-    format: fileFormat,
-  }));
-  
-  logger.add(new File({
-    filename: './logs/combined.log',
-    format: fileFormat,
-  }));
-} else {
-  logger.add(new Console({
-    format: combine(
-      colorize(),
-      devFormat
-    ),
-  }));
-}
-
-export { logger };

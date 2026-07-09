@@ -53,7 +53,7 @@ export const getAllDebates = async (
 
         experimentGroups.set(experimentName, {
           experiment_name: experimentName,
-          datasets: new Set(), // Initialize a Set to collect all unique dataset names
+          datasets: new Set(),
           model_config: { LLM: debate.llmConfigs },
           runs: [],
           total_runs: 0,
@@ -68,7 +68,6 @@ export const getAllDebates = async (
 
       const group = experimentGroups.get(experimentName);
       
-      // Add the current run's dataset name to the Set
       if (debate.datasetName) {
         group.datasets.add(debate.datasetName);
       }
@@ -92,9 +91,7 @@ export const getAllDebates = async (
 
       return {
         ...group,
-        // Convert the Set of names to an Array for the JSON response
         dataset_name: Array.from(group.datasets),
-        // Remove the internal Set from the final output
         datasets: undefined, 
         runs: group.runs.sort((a: any, b: any) => a.seed - b.seed),
         seeds_present: seedsPresent,
@@ -115,7 +112,6 @@ export const getAllDebates = async (
 };
 
 function extractExperimentName(wandbMetadata: any, id: number): string {
-  // ... (rest of the helper function remains unchanged)
   logger.info(`[EXTRACT] Processing Debate ID: ${id}`);
   
   if (!wandbMetadata) {

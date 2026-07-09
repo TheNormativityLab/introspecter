@@ -191,3 +191,69 @@ export const getHumanResponse = async (req: Request, res: Response): Promise<Res
     return handleError(res, error, "Human Response");
   }
 };
+
+export const getLLMConfigs = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    const response = await api.get("/api/v1/llm-configs/simple", { timeout: 10000 });
+
+    if (response.status >= 400) {
+      logger.error(`FastAPI error fetching LLM configs: ${JSON.stringify(response.data)}`);
+      return res.status(response.status).json({
+        success: false,
+        message: "Failed to fetch LLM configs from backend",
+        error: response.data,
+      });
+    }
+
+    return res.status(200).json(response.data);
+  } catch (error: any) {
+    return handleError(res, error, "Get LLM Configs");
+  }
+};
+
+export const getLLMConfigByName = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    const { configName } = req.params;
+
+    if (!configName) {
+      return res.status(400).json({ success: false, message: "Config name is required" });
+    }
+
+    const response = await api.get(`/api/v1/llm-configs/${configName}`, { timeout: 10000 });
+
+    if (response.status === 404) {
+      return res.status(404).json({ success: false, message: `Config '${configName}' not found` });
+    }
+
+    if (response.status >= 400) {
+      return res.status(response.status).json({
+        success: false,
+        message: "Failed to fetch LLM config",
+        error: response.data,
+      });
+    }
+
+    return res.status(200).json(response.data);
+  } catch (error: any) {
+    return handleError(res, error, "Get LLM Config By Name");
+  }
+};
+
+export const getAllLLMConfigsDetailed = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    const response = await api.get("/api/v1/llm-configs/", { timeout: 10000 });
+
+    if (response.status >= 400) {
+      logger.error(`FastAPI error fetching detailed LLM configs: ${JSON.stringify(response.data)}`);
+      return res.status(response.status).json({
+        success: false,
+        message: "Failed to fetch LLM configs from backend",
+        error: response.data,
+      });
+    }
+
+    return res.status(200).json(response.data);
+  } catch (error: any) {
+    return handleError(res, error, "Get All LLM Configs Detailed");
+  }
+};

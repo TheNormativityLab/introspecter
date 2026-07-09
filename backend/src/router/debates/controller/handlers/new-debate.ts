@@ -182,7 +182,13 @@ export const getNewDebate = async (req: Request, res: Response): Promise<Respons
     let agents: Agent[] = [];
     let agentModels: string[] = [];
 
-    if (req.body.agent_models && Array.isArray(req.body.agent_models)) {
+    // Prefer debateData.agents — it carries the authoritative isHuman flag per agent.
+    // Only fall back to reconstructing from a bare agent_models[] list when no
+    // structured agents array was sent at all.
+    if (debateData.agents && debateData.agents.length > 0) {
+      agents = debateData.agents;
+      agentModels = agents.filter((a) => a.enabled).map((a) => a.model);
+    } else if (req.body.agent_models && Array.isArray(req.body.agent_models)) {
       agentModels = req.body.agent_models;
       agents = agentModels.map((model, index) => ({
         id: `agent_${index}`,
@@ -191,9 +197,6 @@ export const getNewDebate = async (req: Request, res: Response): Promise<Respons
         enabled: true,
         isHuman: model === "human-participant",
       }));
-    } else if (debateData.agents && debateData.agents.length > 0) {
-      agents = debateData.agents;
-      agentModels = agents.filter((a) => a.enabled).map((a) => a.model);
     } else {
       return res.status(400).json({ success: false, message: "At least 1 agent is required" });
     }

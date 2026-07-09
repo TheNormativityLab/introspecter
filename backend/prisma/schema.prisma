@@ -48,3 +48,82 @@ model Debate {
 
   @@map("debates")
 }
+
+model ArgumentativeRun {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runName       String   @map("run_name")
+  sourceFile    String   @map("source_file")
+  debaterModel  String?  @map("debater_model")
+  judgeModel    String?  @map("judge_model")
+  numRounds     Int?     @map("num_rounds")
+  metrics       Json?
+  config        Json?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  runQuestions  ArgumentativeRunQuestion[]
+
+  @@unique([runName])
+  @@map("argumentative_runs")
+}
+
+model ArgumentativeQuestion {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  questionText    String   @unique @map("question_text")
+  storyTitle      String?  @map("story_title")
+  storyText       String?  @map("story_text")
+  correctAnswer   String   @default("") @map("correct_answer")
+  incorrectAnswer String   @default("") @map("incorrect_answer")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  runQuestions    ArgumentativeRunQuestion[]
+
+  @@map("argumentative_questions")
+}
+
+model ArgumentativeRunQuestion {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId           String   @map("run_id") @db.Uuid
+  questionId      String   @map("question_id") @db.Uuid
+  questionIndex   Int?     @map("question_index")
+  correctPosition String?  @map("correct_position")
+  judgment        String?
+  isCorrect       Boolean? @map("is_correct")
+  cost            Float?
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  run             ArgumentativeRun     @relation(fields: [runId], references: [id])
+  question        ArgumentativeQuestion @relation(fields: [questionId], references: [id])
+  rounds          ArgumentativeRound[]
+
+  @@unique([runId, questionId])
+  @@map("argumentative_run_questions")
+}
+
+model ArgumentativeRound {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runQuestionId       String   @map("run_question_id") @db.Uuid
+  roundNumber         Int      @map("round_number")
+  /// 'round' | 'response'
+  roundType           String   @map("round_type")
+  correctArgument     String?  @map("correct_argument")
+  incorrectArgument   String?  @map("incorrect_argument")
+  crossExaminerText   String?  @map("cross_examiner_text")
+  judgeText           String?  @map("judge_text")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  runQuestion         ArgumentativeRunQuestion @relation(fields: [runQuestionId], references: [id])
+
+  @@unique([runQuestionId, roundNumber, roundType])
+  @@map("argumentative_rounds")
+}
+
+model AgentConversation {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  messages  Json     @default("[]")
+  metadata  Json     @default("{}")
+  plots     Json     @default("[]")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("agent_conversations")
+}

@@ -15,6 +15,9 @@ import {
   cancelDebate,
   getHumanResponse,
   getHumanReady,
+  getLLMConfigs,
+  getLLMConfigByName,
+  getAllLLMConfigsDetailed,
 } from "./controller/handlers/debugger";
 import { debateRoutes } from "../routes";
 
@@ -22,6 +25,9 @@ const router = express.Router();
 router.get(debateRoutes.GetAllDebates, getAllDebates);
 router.get(debateRoutes.GetSingleDebate, getSingleDebate);
 router.get(debateRoutes.GetResults, getExperimentResults);
+router.get(debateRoutes.GetConfigs, getLLMConfigs);
+router.get(`${debateRoutes.GetConfigs}/:configName`, getLLMConfigByName);
+router.get(`${debateRoutes.GetConfigs}/detailed`, getAllLLMConfigsDetailed);
 router.post(debateRoutes.GetNewDebate, getNewDebate);
 
 router.get(debateRoutes.getDebateRun, getDebateRun);

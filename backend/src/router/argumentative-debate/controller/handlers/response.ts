@@ -7,8 +7,6 @@ const FASTAPI_BASE_URL = process.env.FASTAPI_BASE_URL || "http://introspecter-ap
 export const postResponse = async (req: Request, res: Response): Promise<void> => {
   try {
     const responseData = req.body;
-    // console.log("Received response data:", responseData);
-
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");

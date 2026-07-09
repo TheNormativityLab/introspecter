@@ -6,22 +6,27 @@
     "build": "pnpm run db:generate && pnpm exec tsc",
     "db:generate": "pnpm exec prisma generate",
     "db:push": "pnpm exec prisma db push",
-    "migrate-data": "node src/scripts/db_manager.js",
+    "migrate-data": "node src/scripts/db_manager.js && node src/scripts/import_argumentative.js",
     "start": "node dist/index.js",
     "prod": "pnpm run build && pnpm run db:push && pnpm run start",
     "migrate": "pnpm run migrate-data"
   },
   "dependencies": {
+    "@openai/agents": "^0.8.3",
     "@prisma/client": "6.11.1",
     "axios": "^1.13.4",
     "cors": "^2.8.5",
+    "dockerode": "^4.0.10",
     "dotenv": "^16.0.3",
     "express": "^4.18.2",
     "morgan": "^1.10.1",
-    "winston": "^3.19.0"
+    "openai": "^6.35.0",
+    "winston": "^3.19.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/cors": "^2.8.13",
+    "@types/dockerode": "^4.0.1",
     "@types/express": "^4.17.17",
     "@types/node": "^20.0.0",
     "prisma": "6.11.1",
