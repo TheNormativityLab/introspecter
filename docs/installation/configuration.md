@@ -21,13 +21,7 @@ These keys enable the core AI analysis capabilities of the platform.
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `OPENROUTER_API_KEY` | API key used to authenticate with the OpenRouter API | **Recommended** |
-| `OPENAI_API_KEY` | OpenAI key for GPT-4o Mini / 3.5 Turbo | Optional |
-| `KSCOPE_API_KEY` | Kaleidoscope service API key | Optional |
-| `KSCOPE_API_BASE` | Base URL for Kaleidoscope API endpoints | Optional |
 | `WANDB_API_KEY` | Weights & Biases API key for experiment tracking | Optional |
-
-!!! tip "Provider Selection"
-    You only need to provide keys for the specific AI services you intend to use. However, `OPENROUTER_API_KEY` is recommended for the default setup.
 
 ---
 
