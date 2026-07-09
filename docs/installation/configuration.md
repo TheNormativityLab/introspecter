@@ -4,19 +4,30 @@ This guide details the environment variables used to configure Introspecter. All
 
 ---
 
+## Prerequisites
+
+Before configuring the project, install:
+
+- **pnpm** (recommended package manager)
+- **TypeScript**
+- **Weights & Biases (wandb)** if you plan to use experiment tracking
+
+---
+
 ## External APIs & LLMs
 
 These keys enable the core AI analysis capabilities of the platform.
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `OPENAI_API_KEY` | OpenAI key for GPT-4o Mini / 3.5 Turbo | **Recommended** |
-| `TOGETHER_API_KEY` | Together AI key for Llama and Mistral models | **Recommended** |
+| `OPENROUTER_API_KEY` | API key used to authenticate with the OpenRouter API | **Recommended** |
+| `OPENAI_API_KEY` | OpenAI key for GPT-4o Mini / 3.5 Turbo | Optional |
 | `KSCOPE_API_KEY` | Kaleidoscope service API key | Optional |
 | `KSCOPE_API_BASE` | Base URL for Kaleidoscope API endpoints | Optional |
+| `WANDB_API_KEY` | Weights & Biases API key for experiment tracking | Optional |
 
 !!! tip "Provider Selection"
-    You only need to provide keys for the specific AI services you intend to use. However, `OPENAI_API_KEY` and `TOGETHER_API_KEY` is recommended for the default setup.
+    You only need to provide keys for the specific AI services you intend to use. However, `OPENROUTER_API_KEY` is recommended for the default setup.
 
 ---
 
@@ -36,9 +47,15 @@ Configure where services are exposed on your local machine.
 
 ---
 
-## Database Credentials
+## Database
 
-Introspecter uses separate databases for API and Backend services.
+Introspecter supports configuring the database using a connection string.
+
+```bash
+DATABASE_URL=postgresql://username:password@localhost:5432/introspecter
+```
+
+Alternatively, you can configure separate credentials for each service.
 
 ### API Database
 
@@ -71,10 +88,13 @@ Credentials for RabbitMQ, which handles task queues and inter-service communicat
 
 ## Quick Setup Checklist
 
+- [ ] Install pnpm
+- [ ] Install TypeScript
 - [ ] Copy `.env.example` to `.env`
 - [ ] Set `HOST_PROJECT_PATH` to your absolute project path
-- [ ] Add at least `OPENAI_API_KEY` for AI capabilities
-- [ ] Review and customize database credentials
+- [ ] Add at least `OPENAI_API_KEY` or `OPENROUTER_API_KEY`
+- [ ] (Optional) Add `WANDB_API_KEY` for experiment tracking
+- [ ] Configure `DATABASE_URL` (or the individual database credentials)
 - [ ] Change RabbitMQ credentials if deploying publicly
 - [ ] Verify port numbers don't conflict with other services
 
