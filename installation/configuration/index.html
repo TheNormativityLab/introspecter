@@ -977,31 +977,12 @@
 <td><strong>Recommended</strong></td>
 </tr>
 <tr>
-<td><code>OPENAI_API_KEY</code></td>
-<td>OpenAI key for GPT-4o Mini / 3.5 Turbo</td>
-<td>Optional</td>
-</tr>
-<tr>
-<td><code>KSCOPE_API_KEY</code></td>
-<td>Kaleidoscope service API key</td>
-<td>Optional</td>
-</tr>
-<tr>
-<td><code>KSCOPE_API_BASE</code></td>
-<td>Base URL for Kaleidoscope API endpoints</td>
-<td>Optional</td>
-</tr>
-<tr>
 <td><code>WANDB_API_KEY</code></td>
 <td>Weights &amp; Biases API key for experiment tracking</td>
 <td>Optional</td>
 </tr>
 </tbody>
 </table>
-<div class="admonition tip">
-<p class="admonition-title">Provider Selection</p>
-<p>You only need to provide keys for the specific AI services you intend to use. However, <code>OPENROUTER_API_KEY</code> is recommended for the default setup.</p>
-</div>
 <hr>
 <h2 id="core-system">Core System</h2>
 <p>Essential settings for application environment and file system configuration.</p>
@@ -1084,7 +1065,7 @@
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled><span class="task-list-indicator"></span></label> Install TypeScript</li>
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled><span class="task-list-indicator"></span></label> Copy <code>.env.example</code> to <code>.env</code></li>
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled><span class="task-list-indicator"></span></label> Set <code>HOST_PROJECT_PATH</code> to your absolute project path</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled><span class="task-list-indicator"></span></label> Add at least <code>OPENAI_API_KEY</code> or <code>OPENROUTER_API_KEY</code></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled><span class="task-list-indicator"></span></label> Add <code>OPENROUTER_API_KEY</code></li>
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled><span class="task-list-indicator"></span></label> (Optional) Add <code>WANDB_API_KEY</code> for experiment tracking</li>
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled><span class="task-list-indicator"></span></label> Configure <code>DATABASE_URL</code> (or the individual database credentials)</li>
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled><span class="task-list-indicator"></span></label> Change RabbitMQ credentials if deploying publicly</li>

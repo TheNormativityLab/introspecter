@@ -624,21 +624,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-install-metadata" class="md-nav__link">
+  <a href="#3-launch-application" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Install Metadata
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#4-launch-application" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        4. Launch Application
+        3. Launch Application
       
     </span>
   </a>
@@ -816,21 +805,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-install-metadata" class="md-nav__link">
+  <a href="#3-launch-application" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Install Metadata
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#4-launch-application" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        4. Launch Application
+        3. Launch Application
       
     </span>
   </a>
@@ -991,28 +969,10 @@ Usually pre-installed. Run <code>git --version</code> in terminal to check.</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">API Keys</p>
-<p>Add your <code>OPENAI_API_KEY</code> and <code>TOGETHER_API_KEY</code>! See <a href="../configuration/">Configuration</a> for details.</p>
+<p>Add your <code>OPENROUTER_API_KEY</code>! See <a href="../configuration/">Configuration</a> for details.</p>
 </div>
 <hr>
-<h2 id="3-install-metadata">3. Install Metadata</h2>
-<p>The backend requires specific metadata files to initialize correctly.</p>
-<div class="admonition warning">
-<p class="admonition-title">Manual Step Required</p>
-<ol>
-<li><a class="md-button" href="https://drive.google.com/drive/folders/18xbqaHubmpQxrubngM7jGQF4QK_W6uXF">Download the wandb_metadata folder from Google Drive</a></li>
-<li>Extract the zip file.</li>
-<li>Move the <code>wandb_metadata</code> folder into <code>backend/</code>.</li>
-</ol>
-</div>
-<p><strong>Final structure:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>introspecter/
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>├── backend/
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>│   └── wandb_metadata/  &lt;-- Folder goes here
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>├── frontend/
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>└── .env
-</span></code></pre></div>
-<hr>
-<h2 id="4-launch-application">4. Launch Application</h2>
+<h2 id="3-launch-application">3. Launch Application</h2>
 <p>We offer two ways to run the environment: the VSCode Dev Container (easiest for development) or standard Docker Compose.</p>
 <div class="tabbed-set tabbed-alternate" data-tabs="3:2"><input checked id="__tabbed_3_1" name="__tabbed_3" type="radio"><input id="__tabbed_3_2" name="__tabbed_3" type="radio"><div class="tabbed-labels"><label for="__tabbed_3_1">VSCode Dev Container (Recommended)</label><label for="__tabbed_3_2">Docker Compose (Terminal)</label></div>
 <div class="tabbed-content">
@@ -1035,7 +995,7 @@ Once the terminal opens <em>inside</em> the container, the app starts automatica
 <li>Navigate to the <code>introspecter</code> directory.</li>
 <li>Run the following command:</li>
 </ol>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>--build
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>-d<span class="w"> </span>--build
 </span></code></pre></div>
 <p><strong>Success:</strong><br>
 The logs will stream in your terminal. Wait until you see the success message indicating the server is running (e.g., "Listening on port 3000").</p>
@@ -1063,7 +1023,7 @@ The logs will stream in your terminal. Wait until you see the success message in
 <li>Press <code>Ctrl + C</code> to stop the process.</li>
 <li>To remove containers completely, run:</li>
 </ol>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>down
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>down
 </span></code></pre></div>
 </div>
 <div class="tabbed-block">
